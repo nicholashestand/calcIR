@@ -1,5 +1,5 @@
 /*This is my first attempt to port my python ir program to cuda. 
- * It currently suffers from very slow excecution in python. 
+ * It currently suffers from **very** slow excecution in python. 
  * I'm going to try to port it to cuda c */
 
 #include <stdio.h>
@@ -12,90 +12,84 @@
 
 int main()
 {
-    // Files to read from. TODO: make as arguments or read from input file
+    // Files to read from and calculation info. TODO: make as arguments or read from input file
     char *gmxf          = (char *)"./traj_comp.xtc";
     //char *ndxf          = (char *)"./index.ndx";
     int  frame0         = 0;
-    int  framelast      = 1;
+    int  framelast      = 10;
 
     // Variables
-    int i;
     int natoms, nmol, nchrom;
     int frame;
-    int natom_mol = 4; // change depending on water molecule
-    int nchrom_mol = 2; // chromophores per molecule (2 for stretch)
+    int natom_mol  = 4; // Atoms per water molecule     :: MODEL DEPENDENT
+    int nchrom_mol = 2; // Chromophores per molecule    :: TWO for stretch -- ONE for bend
 
     // Trajectory stuff
-    rvec    *x;
-    float  **kappa;
-    matrix box;
-    float  boxl;
-    float time, prec;
-    int step;
+    rvec        *x;
+    matrix      box;
+    float       boxl, time, prec;
+    int         step;
 
-    // electric field
-    float *eproj;
+    // Spectroscopy stuff
+    float        *eproj; // May not need on CPU...
+    float        *kappa;
 
-    // FOR GPU DEVICE
+    // For GPU
     rvec     *x_d;
-    float    *eproj_d;
+    float     *eproj_d;
+    float     *kappa_d;
+    const int blockSize = 128;//128;//256;  // The number of threads to launch per block
 
-    // for calling gpu function
-    const int blockSize = 256;
 
+
+    // ***          Begin main routine          *** //
     printf("Will read the trajectory from: %s.\n",gmxf);
+    XDRFILE *trj = xdrfile_open( gmxf, "r" ); // Open the xtc trajectory file
 
-    // Open the trajectory file
-    XDRFILE *trj = xdrfile_open( gmxf, "r" );
-
-    // get the number of atoms and molecules
+    // get the number of atoms, molecules andchromophores
     read_xtc_natoms( gmxf, &natoms);
     nmol = natoms / natom_mol;
     nchrom = nmol * nchrom_mol;
     printf("Found %d atoms and %d molecules.\n",natoms, nmol);
     printf("Found %d chromophores.\n",nchrom);
 
-    // for calling gpu function
+
+    // ***          MEMORY ALLOCATION           *** //
+    // determine the number of blocks to launch on the gpu so that each thread takes care of 1 chromophore
     const int numBlocks = (nchrom+blockSize-1)/blockSize;
-
-    // allocate memory arrays
-    x       = (rvec*)   calloc(natoms, sizeof(x[0]));         // position vector matrix
-    eproj   = (float*)  malloc(nchrom*sizeof(float));         // electric field vector matrix
-    kappa   = (float**) malloc(nchrom*sizeof(float  *));      // hamiltonian matrix
-    for (i=0; i<nchrom; i++){
-        kappa[i] = (float*) malloc(nchrom*sizeof(double));
-    }
+    // const int numBlocks = 1;
     
-    // Now allocate memory on GPU device
-    cudaMalloc( &x_d, natoms*sizeof(x[0]));
-    cudaMalloc( &eproj_d, nchrom*sizeof(float));
+    // allocate memory for arrays on the CPU
+    //x       = (rvec*)   calloc(natoms, sizeof(x[0]));       // position vector matrix
+    x       = (rvec*)   malloc(natoms*sizeof(x[0]));          // position vector matrix
+    eproj   = (float *)  malloc(nchrom*sizeof(float ));         // electric field vector matrix // may not need on the cpu
+    kappa   = (float *)  malloc(nchrom*nchrom*sizeof(float ));       // hamiltonian matrix // may only need on gpu?
+    
+    // allocate memory for arrays on the GPU 
+    cudaMalloc( &x_d    , natoms*sizeof(x[0]));
+    cudaMalloc( &eproj_d, nchrom*sizeof(float ));
+    cudaMalloc( &kappa_d, nchrom*nchrom*sizeof(float ));
 
 
-    // loop over the trajectory
+    // ***      MAIN LOOP OVER TRAJECTORY       *** //
     for ( frame=frame0; frame<framelast; frame++ ){
-        // read the trajectory
+
+        // read in the trajectory -- assuming an isotropic box assign the box length
         read_xtc( trj, natoms, &step, &time, box, x, &prec );
-        // assume isotropic box assign length
         boxl = box[0][0];
 
-        // copy positions to device
+        // copy current frame to the device memory
         cudaMemcpy( x_d, x, natoms*sizeof(x[0]), cudaMemcpyHostToDevice );
-        cudaMemcpy( eproj, eproj_d, nchrom*sizeof(float), cudaMemcpyHostToDevice );
-
 
         // get efield projection on GPU
-        get_eproj_GPU<<<numBlocks,blockSize>>>( x_d, boxl, natoms, natom_mol, nchrom, nchrom_mol, nmol, eproj_d );
-        // copy electric field back // TODO::: KEEP THIS ON THE DEVICE AND BUILD THE HAMILTONIAN
-        // cudaMemcpy( eproj, eproj_d, nchrom*sizeof(float), cudaMemcpyDeviceToHost);
+        get_eproj_GPU <<<numBlocks,blockSize>>> ( x_d, boxl, natoms, natom_mol, nchrom, nchrom_mol, nmol, eproj_d );
+        // build kappa on the GPU
+        get_kappa_GPU <<<numBlocks,blockSize>>> ( x_d, boxl, natoms, natom_mol, nchrom, nchrom_mol, nmol, eproj_d, kappa_d );
 
-        /* Test seems to be working
-        for ( i = 0; i<nchrom; i++ ){
-            printf("eproj[%d]: %f\n", i, eproj[i]);
-        }
-        */
-
+        // Diagonalize and calculate uFu -- also jansen's approximation
     }
 
+    // free memory on the CPU and GPU
     free(x);
     free(kappa);
     free(eproj);
@@ -103,13 +97,17 @@ int main()
     cudaFree(eproj_d);
 }
 
-// BUILD ELECTRIC FIELD PROJECTION
+/**********************************************************
+   
+   BUILD ELECTRIC FIELD PROJECTION ALONG OH BONDS
+                    GPU FUNCTION
 
+ **********************************************************/
 __global__
-void get_eproj_GPU( rvec *x, float boxl, int natoms, int natom_mol, int nchrom, int nchrom_mol, int nmol, float *eproj )
+void get_eproj_GPU( rvec *x, float boxl, int natoms, int natom_mol, int nchrom, int nchrom_mol, int nmol, float  *eproj )
 {
     
-    int n, m, i, j;
+    int n, m, i, j, istart, istride;
     int chrom;
     float mox[DIM];                     // oxygen position on molecule m
     float mx[DIM];                      // atom position on molecule m
@@ -120,60 +118,65 @@ void get_eproj_GPU( rvec *x, float boxl, int natoms, int natom_mol, int nchrom, 
     float r;                            // the distance between two atoms 
     const float cutoff = 0.7831;        // the oh cutoff distance
     const float bohr_nm = 18.8973;      // convert from bohr to nanometer
-    //rvec efield[nchrom];                // the electric field // will not need to be a vector
     rvec efield;                        // the electric field vector
 
-    // This outer loop can be moved to the gpu I think
-    chrom = blockIdx.x*blockDim.x + threadIdx.x;
+    istart  =   blockIdx.x * blockDim.x + threadIdx.x;
+    istride =   blockDim.x * gridDim.x;
 
-    if ( chrom < nchrom ){
-        // define the molecule index of the current chromophore
+    // Loop over the chromophores belonging to the current thread
+    for ( chrom = istart; chrom < nchrom; chrom += istride )
+    {
+        // calculate the molecule hosting the current chromophore 
         n = chrom / nchrom_mol;
 
         // initialize the electric field vector to zero at this chromophore
-        for (j=0; j<DIM; j++){
-            efield[j] = 0.;
-        }
+        efield[0]   =   0.;
+        efield[1]   =   0.;
+        efield[2]   =   0.;
 
-        // get the position of the current hydrogen corresponding to the current chromophore
-        // NOTE: I'm making some assumptions about the ordering of the positions, this can be changed if necessary
-        if ( chrom % 2 == 0 ){ //HW1
-            nhx[0] = x[ n*natom_mol + 1 ][0];
-            nhx[1] = x[ n*natom_mol + 1 ][1];
-            nhx[2] = x[ n*natom_mol + 1 ][2];
+
+        // ***          GET INFO ABOUT MOLECULE N HOSTING CHROMOPHORE       *** //
+        //                      N IS OUR REFERENCE MOLECULE                     //
+        // get the position of the hydrogen associated with the current stretch 
+        // NOTE: I'm making some assumptions about the ordering of the positions, 
+        // this can be changed if necessary for a more robust program
+        // Throughout, I assume that the atoms are grouped into molecules and that
+        // every 4th molecule starting at 0 (1, 2, 3) is OW (HW1, HW2, MW)
+        if ( chrom % 2 == 0 ){      //HW1
+            nhx[0]  = x[ n*natom_mol + 1 ][0];
+            nhx[1]  = x[ n*natom_mol + 1 ][1];
+            nhx[2]  = x[ n*natom_mol + 1 ][2];
         }
         else if ( chrom % 2 == 1 ){ //HW2
-            nhx[0] = x[ n*natom_mol + 2 ][0];
-            nhx[1] = x[ n*natom_mol + 2 ][1];
-            nhx[2] = x[ n*natom_mol + 2 ][2];
+            nhx[0]  = x[ n*natom_mol + 2 ][0];
+            nhx[1]  = x[ n*natom_mol + 2 ][1];
+            nhx[2]  = x[ n*natom_mol + 2 ][2];
         }
 
         // The oxygen position
-        nox[0] = x[ n*natom_mol ][0];
-        nox[1] = x[ n*natom_mol ][1];
-        nox[2] = x[ n*natom_mol ][2];
+        nox[0]  = x[ n*natom_mol ][0];
+        nox[1]  = x[ n*natom_mol ][1];
+        nox[2]  = x[ n*natom_mol ][2];
 
         // The oh unit vector
-        nohx[0]  = minImage( nhx[0] - nox[0], boxl );
-        nohx[1]  = minImage( nhx[1] - nox[1], boxl );
-        nohx[2]  = minImage( nhx[2] - nox[2], boxl );
-        r        = mag(nohx);
-        nohx[0]  /= r;
-        nohx[1]  /= r;
-        nohx[2]  /= r;
-        // test is good...
-        //printf("muhat: %f %f %f\n", nohx[0], nohx[1], nohx[2]);
+        nohx[0] = minImage( nhx[0] - nox[0], boxl );
+        nohx[1] = minImage( nhx[1] - nox[1], boxl );
+        nohx[2] = minImage( nhx[2] - nox[2], boxl );
+        r       = mag(nohx);
+        nohx[0] /= r;
+        nohx[1] /= r;
+        nohx[2] /= r;
+        // ***          DONE WITH MOLECULE N                                *** //
 
 
-        // Loop over all other molecules
+
+        // ***          LOOP OVER ALL OTHER MOLECULES                       *** //
         for ( m = 0; m < nmol; m++ ){
 
-            // skip if the atom belongs to the molecule on the current chromophore
+            // skip the reference molecule
             if ( m == n ) continue;
 
-            // get oxygen position on current molecule m
-            // Im assuming the oxygen molecule is the first in the position list, but this can be changed if necessary
-            // For now, I'm just trying to get up and running quickly
+            // get oxygen position on current molecule
             mox[0] = x[ m*natom_mol ][0];
             mox[1] = x[ m*natom_mol ][1];
             mox[2] = x[ m*natom_mol ][2];
@@ -187,25 +190,29 @@ void get_eproj_GPU( rvec *x, float boxl, int natoms, int natom_mol, int nchrom, 
             // skip if the distance is greater than the cutoff
             if ( r > cutoff ) continue;
 
-            // loop over all atoms in the current molecule and calculate the electric field (excluding the oxygen atoms! since they have no charge)
+            // loop over all atoms in the current molecule and calculate the electric field 
+            // (excluding the oxygen atoms since they have no charge)
             for ( i=1; i < natom_mol; i++ ){
-                // TODO: clean this up...
+
+                // position of current atom
                 mx[0] = x[ m*natom_mol + i ][0];
                 mx[1] = x[ m*natom_mol + i ][1];
                 mx[2] = x[ m*natom_mol + i ][2];
 
-                // the displacement betweent the h on n and the current atom on m, in bohr so the efield will be in au
+                // the minimum image displacement between the reference hydrogen and the current atom
+                // NOTE: this converted to bohr so the efield will be in au
                 dr[0]  = minImage( nhx[0] - mx[0], boxl )*bohr_nm;
                 dr[1]  = minImage( nhx[1] - mx[1], boxl )*bohr_nm;
                 dr[2]  = minImage( nhx[2] - mx[2], boxl )*bohr_nm;
                 r      = mag(dr);
 
-                if ( i < 3  ){ // the hydrogens TODO:: MAKE THIS MORE USER FRIENDLY
+                // Add the contribution of the current atom to the electric field
+                if ( i < 3  ){              // HW1 and HW2
                     for ( j=0; j < DIM; j++){
                         efield[j] += 0.52 * dr[j] / (r*r*r);
                     }
                 }
-                else if ( i == 3 ){ // The M sites
+                else if ( i == 3 ){         // MW (note the negative sign)
                     for ( j=0; j < DIM; j++){
                         efield[j] -= 1.04 * dr[j] / (r*r*r);
                     }
@@ -216,34 +223,196 @@ void get_eproj_GPU( rvec *x, float boxl, int natoms, int natom_mol, int nchrom, 
 
         // project the efield along the OH bond to get the relevant value for the map
         eproj[chrom] = dot3( efield, nohx );
-    }
-     
-    // 
-    // test looks good, everything appears to be ok
-    //printf("chrom: %d, eproj %f \n", chrom, eproj[chrom]);
 
+        // test looks good, everything appears to be ok
+        // printf("chrom: %d, eproj %f \n", chrom, eproj[chrom]);
+
+    } // end loop over reference chromophores
+
+}
+
+__global__
+void get_kappa_GPU( rvec *x, float boxl, int natoms, int natom_mol, int nchrom, int nchrom_mol, int nmol, float  *eproj, float  *kappa )
+{
+    
+    int n, m, istart, istride;
+    int chromn, chromm;
+    float mox[DIM];                         // oxygen position on molecule m
+    float mhx[DIM];                         // atom position on molecule m
+    float nhx[DIM];                         // hydrogen position on molecule n of the current chromophore
+    float nox[DIM];                         // oxygen position on molecule n
+    float noh[DIM];
+    float moh[DIM];
+    float nmu[DIM];
+    float mmu[DIM];
+    float mmuprime;
+    float nmuprime;
+    float dr[DIM];                          // the min image vector between two atoms
+    float r;                                // the distance between two atoms 
+    const float bohr_nm    = 18.8973;       // convert from bohr to nanometer
+    const float cm_hartree = 2.1947463E5;   // convert from cm-1 to hartree
+    float  En, Em;                           // the electric field projection
+    float  xn, xm, pn, pm;                   // the x and p from the map
+    float  wn, wm;                           // the energies
+
+    istart  =   blockIdx.x * blockDim.x + threadIdx.x;
+    istride =   blockDim.x * gridDim.x;
+
+    // Loop over the chromophores belonging to the current thread and fill in kappa for that row
+    for ( chromn = istart; chromn < nchrom; chromn += istride )
+    {
+        // calculate the molecule hosting the current chromophore 
+        // and get the corresponding electric field at the relevant hydrogen
+        n   = chromn / nchrom_mol;
+        En  = eproj[chromn];
+
+        // build the map
+        wn  = 3760.2 - 3541.7*En - 152677.0*En*En;
+        xn  = 0.19285 - 1.7261E-5 * wn;
+        pn  = 1.6466  + 5.7692E-4 * wn;
+        nmuprime = 0.1646 + 11.39*En + 63.41*En*En;
+
+        // and calculate the location of the transition dipole moment
+        // SEE calc_efield_GPU for assumptions about ordering of atoms
+        nox[0]  = x[ n*natom_mol ][0];
+        nox[1]  = x[ n*natom_mol ][1];
+        nox[2]  = x[ n*natom_mol ][2];
+        if ( chromn % 2 == 0 )       //HW1
+        {
+            nhx[0]  = x[ n*natom_mol + 1 ][0];
+            nhx[1]  = x[ n*natom_mol + 1 ][1];
+            nhx[2]  = x[ n*natom_mol + 1 ][2];
+        }
+        else if ( chromn % 2 == 1 )  //HW2
+        {
+            nhx[0]  = x[ n*natom_mol + 2 ][0];
+            nhx[1]  = x[ n*natom_mol + 2 ][1];
+            nhx[2]  = x[ n*natom_mol + 2 ][2];
+        }
+
+        // The OH unit vector
+        noh[0] = minImage( nhx[0] - nox[0], boxl );
+        noh[1] = minImage( nhx[1] - nox[1], boxl );
+        noh[2] = minImage( nhx[2] - nox[2], boxl );
+        r      = mag(noh);
+        noh[0] /= r;
+        noh[1] /= r;
+        noh[2] /= r;
+
+        // The location of the TDM
+        nmu[0] = minImage( nox[0] + 0.067 * noh[0], boxl );
+        nmu[1] = minImage( nox[1] + 0.067 * noh[1], boxl );
+        nmu[2] = minImage( nox[2] + 0.067 * noh[2], boxl );
+
+
+        // Loop over all other chromophores
+        for ( chromm = 0; chromm < nchrom; chromm ++ )
+        {
+            // calculate the molecule hosting the current chromophore 
+            // and get the corresponding electric field at the relevant hydrogen
+            m   = chromm / nchrom_mol;
+            Em  = eproj[chromm];
+
+            // also get the relevent x and p from the map
+            wm  = 3760.2 - 3541.7*Em - 152677.0*Em*Em;
+            xm  = 0.19285 - 1.7261E-5 * wm;
+            pm  = 1.6466  + 5.7692E-4 * wm;
+            mmuprime = 0.1646 + 11.39*Em + 63.41*Em*Em;
+
+            // the diagonal energy
+            if ( chromn == chromm )
+            {
+                // Note that this is a flattened 2d array
+                kappa[chromn*nchrom + chromm]   =   wm; 
+            }
+
+            // intramolecular coupling
+            else if ( m == n )
+            {
+                kappa[chromn*nchrom + chromm]   =  (-1361.0 + 27165*(En + Em))*xn*xm - 1.887*pn*pm;
+            }
+
+            // intermolecular coupling
+            else
+            {
+                // calculate the distance between dipoles
+                // they are located 0.67 A from the oxygen along the OH bond
+
+                // tdm position on chromophore n
+                mox[0]  = x[ m*natom_mol ][0];
+                mox[1]  = x[ m*natom_mol ][1];
+                mox[2]  = x[ m*natom_mol ][2];
+                if ( chromm % 2 == 0 )       //HW1
+                {
+                    mhx[0]  = x[ m*natom_mol + 1 ][0];
+                    mhx[1]  = x[ m*natom_mol + 1 ][1];
+                    mhx[2]  = x[ m*natom_mol + 1 ][2];
+                }
+                else if ( chromm % 2 == 1 )  //HW2
+                {
+                    mhx[0]  = x[ m*natom_mol + 2 ][0];
+                    mhx[1]  = x[ m*natom_mol + 2 ][1];
+                    mhx[2]  = x[ m*natom_mol + 2 ][2];
+                }
+
+                // The OH unit vector
+                moh[0] = minImage( mhx[0] - mox[0], boxl );
+                moh[1] = minImage( mhx[1] - mox[1], boxl );
+                moh[2] = minImage( mhx[2] - mox[2], boxl );
+                r      = mag(moh);
+                moh[0] /= r;
+                moh[1] /= r;
+                moh[2] /= r;
+
+                // The location of the TDM and the dipole derivative
+                mmu[0] = minImage( mox[0] + 0.067 * moh[0], boxl );
+                mmu[1] = minImage( mox[1] + 0.067 * moh[1], boxl );
+                mmu[2] = minImage( mox[2] + 0.067 * moh[2], boxl );
+
+                // the distance between TDM on N and on M and convert to unit vector
+                dr[0] = minImage( nmu[0] - mmu[0], boxl );
+                dr[1] = minImage( nmu[1] - mmu[1], boxl );
+                dr[2] = minImage( nmu[2] - mmu[2], boxl );
+                r     = mag( dr );
+                dr[0] /= r;
+                dr[1] /= r;
+                dr[2] /= r;
+                r     *= bohr_nm; // convert to bohr
+
+                // The coupling in the transition dipole approximation in wavenumber
+                // Note the conversion to wavenumber
+                kappa[chromn*nchrom + chromm]   = ( dot3( noh, moh ) - 3.0 * dot3( noh, dr ) * 
+                                                    dot3( moh, dr ) ) / ( r*r*r ) * 
+                                                    xn*xm*nmuprime*mmuprime*cm_hartree;
+            }// end intramolecular coupling
+        }// end loop over chromm
+    }// end loop over reference
 }
 
 
 
 
+/**********************************************************
+   
+        HELPER FUNCTIONS FOR GPU CALCULATIONS
+            CALLABLE FROM CPU AND GPU
 
+ **********************************************************/
 
-
-
-// RANDOM HELPER FUNCTIONS
-// TODO MAKE So it can be called on gpu from make efield calc
+// The minimage image of a scalar
 float minImage( float dx, float boxl )
 {
     return dx - boxl*round(dx/boxl);
 }
 
-float mag( float * dx )
+// The magnitude of a 3 dimensional vector
+float mag( float dx[3] )
 {
     return sqrt( dot3( dx, dx ) );
 }
 
-float dot3( float *x, float *y )
+// The dot product of a 3 dimensional vector
+float dot3( float x[3], float y[3] )
 {
     return  x[0]*y[0] + x[1]*y[1] + x[2]*y[2];
 }
