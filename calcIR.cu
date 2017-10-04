@@ -9,36 +9,45 @@
 #include <xdrfile/xdrfile_xtc.h>
 #include "calcIR.h"
 
+#include "magma_v2.h"
+
 
 int main()
 {
-    // Files to read from and calculation info. TODO: make as arguments or read from input file
+    // User input
+    // TODO: make to get from user instead of hardcode
     char *gmxf          = (char *)"./traj_comp.xtc";
-    //char *ndxf          = (char *)"./index.ndx";
     int  frame0         = 0;
-    int  framelast      = 10;
+    int  framelast      = 100;
+    int  natom_mol      = 4;    // Atoms per water molecule  :: MODEL DEPENDENT
+    int  nchrom_mol     = 2;    // Chromophores per molecule :: TWO for stretch -- ONE for bend
 
-    // Variables
-    int natoms, nmol, nchrom;
-    int frame;
-    int natom_mol  = 4; // Atoms per water molecule     :: MODEL DEPENDENT
-    int nchrom_mol = 2; // Chromophores per molecule    :: TWO for stretch -- ONE for bend
+    // Some Variables
+    int         natoms, nmol, frame, nchrom;
 
-    // Trajectory stuff
+    // Trajectory stuff for the CPU
     rvec        *x;
     matrix      box;
     float       boxl, time, prec;
     int         step;
 
-    // Spectroscopy stuff
-    float        *eproj; // May not need on CPU...
-    float        *kappa;
-
-    // For GPU
-    rvec     *x_d;
+    // Variables for the GPU
+    rvec      *x_d;
     float     *eproj_d;
+    //magmaFloat_ptr kappa_d;
     float     *kappa_d;
-    const int blockSize = 128;//128;//256;  // The number of threads to launch per block
+    const int blockSize = 128;  // The number of threads to launch per block
+
+    // magma variables for ssyevr
+    float       aux_work[1];
+    magma_int_t aux_iwork[1], info, ldkappa, lwork, liwork;
+    magma_int_t *iwork;
+    float       *work;
+    float       *w   ;
+    float       *wA  ;
+    real_Double_t gpu_time;
+
+
 
 
 
@@ -54,47 +63,84 @@ int main()
     printf("Found %d chromophores.\n",nchrom);
 
 
+
+
     // ***          MEMORY ALLOCATION           *** //
+
     // determine the number of blocks to launch on the gpu so that each thread takes care of 1 chromophore
     const int numBlocks = (nchrom+blockSize-1)/blockSize;
     // const int numBlocks = 1;
     
+    // Initialize magma math library
+    magma_init();
+
     // allocate memory for arrays on the CPU
-    //x       = (rvec*)   calloc(natoms, sizeof(x[0]));       // position vector matrix
-    x       = (rvec*)   malloc(natoms*sizeof(x[0]));          // position vector matrix
-    eproj   = (float *)  malloc(nchrom*sizeof(float ));         // electric field vector matrix // may not need on the cpu
-    kappa   = (float *)  malloc(nchrom*nchrom*sizeof(float ));       // hamiltonian matrix // may only need on gpu?
+    x = (rvec*) malloc(natoms*sizeof(x[0]));          // position vector matrix
     
     // allocate memory for arrays on the GPU 
     cudaMalloc( &x_d    , natoms*sizeof(x[0]));
-    cudaMalloc( &eproj_d, nchrom*sizeof(float ));
-    cudaMalloc( &kappa_d, nchrom*nchrom*sizeof(float ));
+    ldkappa = (magma_int_t) nchrom;
+    //ldkappa = magma_roundup( nchrom, 32 ); -- DO LATER, BUT MAY REQUIRE REWRITING get_kappa_GPU
+    magma_smalloc( &eproj_d, nchrom );
+    magma_smalloc( &kappa_d, ldkappa*nchrom);
+    magma_smalloc_cpu( &w  , nchrom );
+
+
+
 
 
     // ***      MAIN LOOP OVER TRAJECTORY       *** //
     for ( frame=frame0; frame<framelast; frame++ ){
 
-        // read in the trajectory -- assuming an isotropic box assign the box length
+        // read in the trajectory and copy to device memory
         read_xtc( trj, natoms, &step, &time, box, x, &prec );
-        boxl = box[0][0];
-
-        // copy current frame to the device memory
         cudaMemcpy( x_d, x, natoms*sizeof(x[0]), cudaMemcpyHostToDevice );
+        boxl = box[0][0];
 
         // get efield projection on GPU
         get_eproj_GPU <<<numBlocks,blockSize>>> ( x_d, boxl, natoms, natom_mol, nchrom, nchrom_mol, nmol, eproj_d );
         // build kappa on the GPU
         get_kappa_GPU <<<numBlocks,blockSize>>> ( x_d, boxl, natoms, natom_mol, nchrom, nchrom_mol, nmol, eproj_d, kappa_d );
 
-        // Diagonalize and calculate uFu -- also jansen's approximation
+        // Diagonalize kappa and calculate uFu -- also jansen's approximation
+        // first time, query workspace dimension and allocate workspace arrays
+        if ( frame == 0)
+        {
+            magma_ssyevd_gpu( MagmaVec, MagmaUpper, (magma_int_t) nchrom, NULL, ldkappa, 
+                              NULL, NULL, (magma_int_t) nchrom, aux_work, -1, aux_iwork, -1, &info );
+            lwork   = (magma_int_t) aux_work[0];
+            liwork  = aux_iwork[0];
+
+            // make space for work arrays and eigenvalues and other stuff
+            magma_smalloc_cpu   ( &w  , (magma_int_t) nchrom );
+            magma_smalloc_pinned( &wA , (magma_int_t) nchrom*ldkappa );
+            magma_smalloc_pinned( &work , lwork  );
+            magma_imalloc_cpu   ( &iwork, liwork );
+            
+        }
+
+        // diagonalize kappa
+        magma_ssyevd_gpu( MagmaVec, MagmaUpper, (magma_int_t) nchrom, kappa_d, ldkappa,
+                          w, wA, ldkappa, work, lwork, iwork, liwork, &info );
     }
+
+
+
 
     // free memory on the CPU and GPU
     free(x);
-    free(kappa);
-    free(eproj);
     cudaFree(x_d);
-    cudaFree(eproj_d);
+    magma_free(kappa_d);
+    magma_free(eproj_d);
+    magma_free_cpu(w  );
+    magma_free_cpu(iwork);
+    magma_free_pinned( work );
+    magma_free_pinned( wA );
+
+    // final call to finalize magma math library
+    magma_finalize();
+
+    return 0;
 }
 
 /**********************************************************
@@ -162,7 +208,7 @@ void get_eproj_GPU( rvec *x, float boxl, int natoms, int natom_mol, int nchrom, 
         nohx[0] = minImage( nhx[0] - nox[0], boxl );
         nohx[1] = minImage( nhx[1] - nox[1], boxl );
         nohx[2] = minImage( nhx[2] - nox[2], boxl );
-        r       = mag(nohx);
+        r       = mag3(nohx);
         nohx[0] /= r;
         nohx[1] /= r;
         nohx[2] /= r;
@@ -185,7 +231,7 @@ void get_eproj_GPU( rvec *x, float boxl, int natoms, int natom_mol, int nchrom, 
             dr[0]  = minImage( mox[0] - nhx[0], boxl );
             dr[1]  = minImage( mox[1] - nhx[1], boxl );
             dr[2]  = minImage( mox[2] - nhx[2], boxl );
-            r      = mag(dr);
+            r      = mag3(dr);
 
             // skip if the distance is greater than the cutoff
             if ( r > cutoff ) continue;
@@ -204,7 +250,7 @@ void get_eproj_GPU( rvec *x, float boxl, int natoms, int natom_mol, int nchrom, 
                 dr[0]  = minImage( nhx[0] - mx[0], boxl )*bohr_nm;
                 dr[1]  = minImage( nhx[1] - mx[1], boxl )*bohr_nm;
                 dr[2]  = minImage( nhx[2] - mx[2], boxl )*bohr_nm;
-                r      = mag(dr);
+                r      = mag3(dr);
 
                 // Add the contribution of the current atom to the electric field
                 if ( i < 3  ){              // HW1 and HW2
@@ -294,7 +340,7 @@ void get_kappa_GPU( rvec *x, float boxl, int natoms, int natom_mol, int nchrom, 
         noh[0] = minImage( nhx[0] - nox[0], boxl );
         noh[1] = minImage( nhx[1] - nox[1], boxl );
         noh[2] = minImage( nhx[2] - nox[2], boxl );
-        r      = mag(noh);
+        r      = mag3(noh);
         noh[0] /= r;
         noh[1] /= r;
         noh[2] /= r;
@@ -359,7 +405,7 @@ void get_kappa_GPU( rvec *x, float boxl, int natoms, int natom_mol, int nchrom, 
                 moh[0] = minImage( mhx[0] - mox[0], boxl );
                 moh[1] = minImage( mhx[1] - mox[1], boxl );
                 moh[2] = minImage( mhx[2] - mox[2], boxl );
-                r      = mag(moh);
+                r      = mag3(moh);
                 moh[0] /= r;
                 moh[1] /= r;
                 moh[2] /= r;
@@ -373,7 +419,7 @@ void get_kappa_GPU( rvec *x, float boxl, int natoms, int natom_mol, int nchrom, 
                 dr[0] = minImage( nmu[0] - mmu[0], boxl );
                 dr[1] = minImage( nmu[1] - mmu[1], boxl );
                 dr[2] = minImage( nmu[2] - mmu[2], boxl );
-                r     = mag( dr );
+                r     = mag3( dr );
                 dr[0] /= r;
                 dr[1] /= r;
                 dr[2] /= r;
@@ -390,8 +436,6 @@ void get_kappa_GPU( rvec *x, float boxl, int natoms, int natom_mol, int nchrom, 
 }
 
 
-
-
 /**********************************************************
    
         HELPER FUNCTIONS FOR GPU CALCULATIONS
@@ -406,7 +450,7 @@ float minImage( float dx, float boxl )
 }
 
 // The magnitude of a 3 dimensional vector
-float mag( float dx[3] )
+float mag3( float dx[3] )
 {
     return sqrt( dot3( dx, dx ) );
 }
@@ -416,4 +460,3 @@ float dot3( float x[3], float y[3] )
 {
     return  x[0]*y[0] + x[1]*y[1] + x[2]*y[2];
 }
-
