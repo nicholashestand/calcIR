@@ -12,7 +12,12 @@ __global__
 void get_eproj_GPU( rvec *x, float boxl, int natoms, int natom_mol, int nchrom, int nchrom_mol, int nmol, float  *eproj);
 
 __global__
-void get_kappa_GPU( rvec *x, float boxl, int natoms, int natom_mol, int nchrom, int nchrom_mol, int nmol, float  *eproj, float  *kappa, rvec *mu);
+void get_kappa_GPU( rvec *x, float boxl, int natoms, int natom_mol, int nchrom, int nchrom_mol, int nmol, float  *eproj, 
+                    float  *kappa, float *mux, float *muy, float *muz);
+
+__global__
+void get_spectral_density( float *w, float *MUX, float *MUY, float *MUZ, float *omega, float *Sw, 
+                           int nomega, int nchrom, float t1 );
 
 __host__ __device__
 float minImage( float dx, float boxl );

@@ -11,6 +11,10 @@
 
 #include "magma_v2.h"
 
+// hbar in cm-1 * ps
+#define HBAR 5.30887
+#define PI   3.14159265359
+
 
 int main()
 {
@@ -18,9 +22,10 @@ int main()
     // TODO: make to get from user instead of hardcode
     char *gmxf          = (char *)"./traj_comp.xtc";
     int  frame0         = 0;
-    int  framelast      = 100;
+    int  framelast      = 1;
     int  natom_mol      = 4;    // Atoms per water molecule  :: MODEL DEPENDENT
     int  nchrom_mol     = 2;    // Chromophores per molecule :: TWO for stretch -- ONE for bend
+    float t1            = 0.260;// relaxation time
 
     // Some Variables
     int         natoms, nmol, frame, nchrom;
@@ -33,9 +38,9 @@ int main()
 
     // Variables for the GPU
     rvec      *x_d;
-    rvec      *mu_d;
+    float     *mux_d, *muy_d, *muz_d;
+    float     *MUX_d, *MUY_d, *MUZ_d;
     float     *eproj_d;
-    //magmaFloat_ptr kappa_d;
     float     *kappa_d;
     const int blockSize = 128;  // The number of threads to launch per block
 
@@ -46,9 +51,17 @@ int main()
     float       *work;
     float       *w   ;
     float       *wA  ;
-    real_Double_t gpu_time;
+    // real_Double_t gpu_time;
 
+    // magma variables for gemv
+    magma_queue_t queue;
 
+    // variables for spectrum calculations
+    float       *w_d;
+    float       *omega, *omega_d;
+    float       *Sw, *Sw_d;
+    int         omegaStart=2800, omegaStop=4000, omegaStep=1;
+    int         nomega = (omegaStop - omegaStart) / omegaStep + 1;
 
 
 
@@ -76,16 +89,27 @@ int main()
     magma_init();
 
     // allocate memory for arrays on the CPU
-    x = (rvec*) malloc(natoms*sizeof(x[0]));          // position vector matrix
+    x     = (rvec*) malloc(natoms*sizeof(x[0]));          // position vector matrix
+    omega = (float *) malloc( nomega*sizeof(float));      // spectral frequencies
+    Sw    = (float *) malloc( nomega*sizeof(float));      // spectral density
     
-    // allocate memory for arrays on the GPU 
+    // allocate memory for arrays on the GPU
     cudaMalloc( &x_d    , natoms*sizeof(x[0]));
-    cudaMalloc( &mu_d   , nchrom*sizeof(mu_d[0]));
+    cudaMalloc( &mux_d   , nchrom*sizeof(float));
+    cudaMalloc( &muy_d   , nchrom*sizeof(float));
+    cudaMalloc( &muz_d   , nchrom*sizeof(float));
+    cudaMalloc( &MUX_d   , nchrom*sizeof(float));
+    cudaMalloc( &MUY_d   , nchrom*sizeof(float));
+    cudaMalloc( &MUZ_d   , nchrom*sizeof(float));
+    // For kappa
     ldkappa = (magma_int_t) nchrom;
-    //ldkappa = magma_roundup( nchrom, 32 ); -- DO LATER, BUT MAY REQUIRE REWRITING get_kappa_GPU
     magma_smalloc( &eproj_d, nchrom );
     magma_smalloc( &kappa_d, ldkappa*nchrom);
     magma_smalloc_cpu( &w  , nchrom );
+    magma_smalloc( &w_d, nchrom );
+    // For spectrum
+    cudaMalloc( &omega_d, nomega*sizeof(float));
+    cudaMalloc( &Sw_d, nomega*sizeof(float));
 
 
 
@@ -103,12 +127,13 @@ int main()
         // get efield projection on GPU
         get_eproj_GPU <<<numBlocks,blockSize>>> ( x_d, boxl, natoms, natom_mol, nchrom, nchrom_mol, nmol, eproj_d );
         // build kappa on the GPU
-        get_kappa_GPU <<<numBlocks,blockSize>>> ( x_d, boxl, natoms, natom_mol, nchrom, nchrom_mol, nmol, eproj_d, kappa_d, mu_d );
+        get_kappa_GPU <<<numBlocks,blockSize>>> ( x_d, boxl, natoms, natom_mol, nchrom, nchrom_mol, nmol, eproj_d, 
+                                                  kappa_d, mux_d, muy_d, muz_d );
 
 
         // Diagonalize the Hamiltonian
         // first time, query workspace dimension and allocate workspace arrays
-        if ( frame == 0)
+        if ( frame == frame0)
         {
             magma_ssyevd_gpu( MagmaVec, MagmaUpper, (magma_int_t) nchrom, NULL, ldkappa, 
                               NULL, NULL, (magma_int_t) nchrom, aux_work, -1, aux_iwork, -1, &info );
@@ -125,22 +150,69 @@ int main()
         magma_ssyevd_gpu( MagmaVec, MagmaUpper, (magma_int_t) nchrom, kappa_d, ldkappa,
                           w, wA, ldkappa, work, lwork, iwork, liwork, &info );
 
-        
-        // calculate the spectral density
-        //get_spectral_density( w, kappa_d, x );
+        // Calculate spectral density and frequency distribution
+        if ( frame == frame0 ){
+
+            // project the transition dipole moments onto the eigenbasis
+            magma_queue_create( 0, &queue );
+            magma_sgemv( MagmaTrans, (magma_int_t) nchrom, (magma_int_t) nchrom, 1.0, kappa_d, ldkappa,
+                         mux_d, 1, 0.0, MUX_d, 1, queue);
+            magma_sgemv( MagmaTrans, (magma_int_t) nchrom, (magma_int_t) nchrom, 1.0, kappa_d, ldkappa,
+                         muy_d, 1, 0.0, MUY_d, 1, queue);
+            magma_sgemv( MagmaTrans, (magma_int_t) nchrom, (magma_int_t) nchrom, 1.0, kappa_d, ldkappa,
+                         muz_d, 1, 0.0, MUZ_d, 1, queue);
+            magma_queue_destroy( queue );
+
+            // Define the spectral range of interest and initialize spectral arrays
+            for (int i = 0; i < nomega; i++)
+            {
+                omega[i] = (float) (omegaStart + omegaStep*i); Sw[i]    = 0.0;
+            }
+            // Copy eigenvalues and omegas for spectrum to device 
+
+            cudaMemcpy( omega_d, omega, nomega*sizeof(float), cudaMemcpyHostToDevice );
+            cudaMemcpy( w_d    , w    , nchrom*sizeof(float), cudaMemcpyHostToDevice );
+            cudaMemcpy( Sw_d   , Sw   , nomega*sizeof(float), cudaMemcpyHostToDevice );
+
+
+            // calculate the spectral density on the GPU and copy back to the CPU
+            get_spectral_density<<<numBlocks,blockSize>>>( w_d, MUX_d, MUY_d, MUZ_d, omega_d, Sw_d, 
+                                                            nomega, nchrom, t1 );
+            cudaMemcpy( Sw, Sw_d, nomega*sizeof(float), cudaMemcpyDeviceToHost );
+        }
 
         // calculate the tcf
     }
 
-
-
-
+    // write the spectral density to file
+    // TODO:: allow user to define custom names
+    FILE *spec_density = fopen("spectral_density.csv", "w");
+    for ( int i = 0; i < nomega; i++)
+    {
+        fprintf(spec_density, "%f %f\n", omega[i], Sw[i]);
+    }
+    fclose(spec_density);
+    
     // free memory on the CPU and GPU
     free(x);
+    free(omega);
+    free(Sw);
+
     cudaFree(x_d);
-    magma_free(kappa_d);
+    cudaFree(mux_d); 
+    cudaFree(muy_d);
+    cudaFree(muz_d);
+    cudaFree(MUX_d); 
+    cudaFree(MUY_d);
+    cudaFree(MUZ_d);
+    cudaFree(omega_d);
+    cudaFree(Sw_d);
+ 
     magma_free(eproj_d);
-    magma_free_cpu(w  );
+    magma_free(kappa_d);
+    magma_free_cpu(w);
+    magma_free(w_d);
+
     magma_free_cpu(iwork);
     magma_free_pinned( work );
     magma_free_pinned( wA );
@@ -292,7 +364,8 @@ void get_eproj_GPU( rvec *x, float boxl, int natoms, int natom_mol, int nchrom, 
 
  **********************************************************/
 __global__
-void get_kappa_GPU( rvec *x, float boxl, int natoms, int natom_mol, int nchrom, int nchrom_mol, int nmol, float  *eproj, float  *kappa, rvec *mu)
+void get_kappa_GPU( rvec *x, float boxl, int natoms, int natom_mol, int nchrom, int nchrom_mol, int nmol, 
+                    float  *eproj, float  *kappa, float *mux, float *muy, float *muz)
 {
     
     int n, m, istart, istride;
@@ -365,9 +438,9 @@ void get_kappa_GPU( rvec *x, float boxl, int natoms, int natom_mol, int nchrom, 
         nmu[2] = minImage( nox[2] + 0.067 * noh[2], boxl );
         
         // and the TDM vector to return
-        mu[chromn][0] = noh[0] * nmuprime * xn;
-        mu[chromn][1] = noh[1] * nmuprime * xn;
-        mu[chromn][2] = noh[2] * nmuprime * xn;
+        mux[chromn] = noh[0] * nmuprime * xn;
+        muy[chromn] = noh[1] * nmuprime * xn;
+        muz[chromn] = noh[2] * nmuprime * xn;
 
         // Loop over all other chromophores
         for ( chromm = 0; chromm < nchrom; chromm ++ )
@@ -453,16 +526,44 @@ void get_kappa_GPU( rvec *x, float boxl, int natoms, int natom_mol, int nchrom, 
     }// end loop over reference
 }
 
-// Calculate the spectral density
-/*
+
+/**********************************************************
+   
+        Calculate the Spectral Density
+
+ **********************************************************/
 __global__
-void get_spectral_density( w, kappa_d, x ){
+void get_spectral_density( float *w, float *MUX, float *MUY, float *MUZ, float *omega, float *Sw, 
+                           int nomega, int nchrom, float t1 ){
 
+    int istart, istride, i, chromn;
+    float wi, dw, MU2, gamma;
+    
     // split up each desired frequency to separate thread on GPU
+    istart  =   blockIdx.x * blockDim.x + threadIdx.x;
+    istride =   blockDim.x * gridDim.x;
 
+    // the linewidth parameter
+    gamma = HBAR/(t1 * 2.0);
 
+    // Loop over the chromophores belonging to the current thread and fill in kappa for that row
+    for ( i = istart; i < nomega; i += istride )
+    {
+        // get current frequency
+        wi = omega[i];
+        
+        // Loop over all chromophores calculatint the spectral intensity at the current frequency
+        for ( chromn = 0; chromn < nchrom; chromn ++ ){
+            // calculate the TDM squared and get the mode energy
+            MU2     = MUX[chromn]*MUX[chromn] + MUY[chromn]*MUY[chromn] + MUZ[chromn]*MUZ[chromn];
+            dw      = wi - w[chromn];
+
+            // add a lorentzian lineshape to the spectral density
+            Sw[i] += MU2 * gamma / ( dw*dw + gamma*gamma )/PI;
+        }
+        //printf("Sw[%d]=%f\n", i, Sw[i]);
+    }
 }
-*/
 
 /**********************************************************
    
