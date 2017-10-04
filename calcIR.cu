@@ -33,6 +33,7 @@ int main()
 
     // Variables for the GPU
     rvec      *x_d;
+    rvec      *mu_d;
     float     *eproj_d;
     //magmaFloat_ptr kappa_d;
     float     *kappa_d;
@@ -79,6 +80,7 @@ int main()
     
     // allocate memory for arrays on the GPU 
     cudaMalloc( &x_d    , natoms*sizeof(x[0]));
+    cudaMalloc( &mu_d   , nchrom*sizeof(mu_d[0]));
     ldkappa = (magma_int_t) nchrom;
     //ldkappa = magma_roundup( nchrom, 32 ); -- DO LATER, BUT MAY REQUIRE REWRITING get_kappa_GPU
     magma_smalloc( &eproj_d, nchrom );
@@ -97,12 +99,14 @@ int main()
         cudaMemcpy( x_d, x, natoms*sizeof(x[0]), cudaMemcpyHostToDevice );
         boxl = box[0][0];
 
+
         // get efield projection on GPU
         get_eproj_GPU <<<numBlocks,blockSize>>> ( x_d, boxl, natoms, natom_mol, nchrom, nchrom_mol, nmol, eproj_d );
         // build kappa on the GPU
-        get_kappa_GPU <<<numBlocks,blockSize>>> ( x_d, boxl, natoms, natom_mol, nchrom, nchrom_mol, nmol, eproj_d, kappa_d );
+        get_kappa_GPU <<<numBlocks,blockSize>>> ( x_d, boxl, natoms, natom_mol, nchrom, nchrom_mol, nmol, eproj_d, kappa_d, mu_d );
 
-        // Diagonalize kappa and calculate uFu -- also jansen's approximation
+
+        // Diagonalize the Hamiltonian
         // first time, query workspace dimension and allocate workspace arrays
         if ( frame == 0)
         {
@@ -118,10 +122,14 @@ int main()
             magma_imalloc_cpu   ( &iwork, liwork );
             
         }
-
-        // diagonalize kappa
         magma_ssyevd_gpu( MagmaVec, MagmaUpper, (magma_int_t) nchrom, kappa_d, ldkappa,
                           w, wA, ldkappa, work, lwork, iwork, liwork, &info );
+
+        
+        // calculate the spectral density
+        //get_spectral_density( w, kappa_d, x );
+
+        // calculate the tcf
     }
 
 
@@ -277,8 +285,14 @@ void get_eproj_GPU( rvec *x, float boxl, int natoms, int natom_mol, int nchrom, 
 
 }
 
+/**********************************************************
+   
+   BUILD HAMILTONIAN AND RETURN TRANSITION DIPOLE VECTOR
+    FOR EACH CHROMOPHORE ON THE GPU
+
+ **********************************************************/
 __global__
-void get_kappa_GPU( rvec *x, float boxl, int natoms, int natom_mol, int nchrom, int nchrom_mol, int nmol, float  *eproj, float  *kappa )
+void get_kappa_GPU( rvec *x, float boxl, int natoms, int natom_mol, int nchrom, int nchrom_mol, int nmol, float  *eproj, float  *kappa, rvec *mu)
 {
     
     int n, m, istart, istride;
@@ -349,7 +363,11 @@ void get_kappa_GPU( rvec *x, float boxl, int natoms, int natom_mol, int nchrom, 
         nmu[0] = minImage( nox[0] + 0.067 * noh[0], boxl );
         nmu[1] = minImage( nox[1] + 0.067 * noh[1], boxl );
         nmu[2] = minImage( nox[2] + 0.067 * noh[2], boxl );
-
+        
+        // and the TDM vector to return
+        mu[chromn][0] = noh[0] * nmuprime * xn;
+        mu[chromn][1] = noh[1] * nmuprime * xn;
+        mu[chromn][2] = noh[2] * nmuprime * xn;
 
         // Loop over all other chromophores
         for ( chromm = 0; chromm < nchrom; chromm ++ )
@@ -435,6 +453,16 @@ void get_kappa_GPU( rvec *x, float boxl, int natoms, int natom_mol, int nchrom, 
     }// end loop over reference
 }
 
+// Calculate the spectral density
+/*
+__global__
+void get_spectral_density( w, kappa_d, x ){
+
+    // split up each desired frequency to separate thread on GPU
+
+
+}
+*/
 
 /**********************************************************
    
