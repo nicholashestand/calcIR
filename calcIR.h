@@ -2,6 +2,7 @@
 #define CALCIR_H
 
 #include <xdrfile/xdrfile.h>
+#include "magma_v2.h"
 
 void get_eproj( rvec *x, float boxl, int natoms, int natom_mol, int nchrom, int nchrom_mol, int nmol, float  *eproj);
 
@@ -18,6 +19,9 @@ void get_kappa_GPU( rvec *x, float boxl, int natoms, int natom_mol, int nchrom, 
 __global__
 void get_spectral_density( float *w, float *MUX, float *MUY, float *MUZ, float *omega, float *Sw, 
                            int nomega, int nchrom, float t1 );
+
+__global__
+void cast_to_complex_GPU( float *s_d, magmaFloatComplex *c_d, int n );
 
 __host__ __device__
 float minImage( float dx, float boxl );
