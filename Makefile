@@ -3,7 +3,7 @@
 FPIC = -fPIC
 
 NVCCFLAGS = -O3	-DNDEBUG -DADD_ -Xcompiler "$(FPIC) -Wall -Wno-unused-function" -DMKL_ILP64
-LIB = -lmkl_gf_ilp64 -lmkl_gnu_thread -lmkl_core -lpthread -lcublas -lcusparse -lcudart -lcudadevrt
+LIB = -lmkl_gf_ilp64 -lmkl_gnu_thread -lmkl_core -lpthread -lcublas -lcusparse -lcudart -lcudadevrt -lcufft
 LIB += -lxdrfile
 LIB += -lmagma
 MKLROOT = /opt/intel/mkl

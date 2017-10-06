@@ -10,9 +10,9 @@
 #include "calcIR.h"
 
 #include "magma_v2.h"
+#include <cufft.h>
 
-// hbar in cm-1 * ps
-#define HBAR 5.30887
+#define HBAR 5.30887         // in cm-1 * ps
 #define PI   3.14159265359
 
 
@@ -20,7 +20,7 @@ int main()
 {
     // User input
     // TODO: make to get from user instead of hardcode
-    char *gmxf          = (char *)"./traj_comp.xtc";
+    char *gmxf          = (char *)"./n1/traj_comp.xtc";
     int  frame0         = 0;
     int  framelast      = 500;
     int  natom_mol      = 4;    // Atoms per water molecule  :: MODEL DEPENDENT
@@ -31,7 +31,8 @@ int main()
 
     // Some Variables
     int         natoms, nmol, frame, nchrom;
-    int         nframes = framelast - frame0;
+    int         nframes     = framelast - frame0;
+    int         ntcfpoints  = nframes * 2 - 1;
 
     // Trajectory stuff for the CPU
     rvec        *x;
@@ -69,10 +70,14 @@ int main()
 
     // variables for TCF
     magmaFloatComplex *F, *F_d, *propeig, *propeig_d, *proploc_d, *ckappa_d;
-    magmaFloatComplex tcfx, tcfy, tcfz;
-    magmaFloatComplex *tcf;
+    magmaFloatComplex tcfx, tcfy, tcfz, dcy, tcftmp;
+    magmaFloatComplex *tcf, *tcf_d;
     float       *time2;
     float        arg;
+
+    // For fft on gpu
+    cufftHandle         plan;
+
 
 
 
@@ -103,10 +108,10 @@ int main()
     x       = (rvec*) malloc(natoms*sizeof(x[0]));          // position vector matrix
     omega   = (float *) malloc( nomega*sizeof(float));      // spectral frequencies
     Sw      = (float *) malloc( nomega*sizeof(float));      // spectral density
-    time2   = (float *) malloc( nframes*sizeof(float));     // time array
+    time2   = (float *) malloc( ntcfpoints*sizeof(float));     // time array
     F       = (magmaFloatComplex *) calloc( nchrom*nchrom, sizeof(magmaFloatComplex));
     propeig = (magmaFloatComplex *) calloc( nchrom*nchrom, sizeof(magmaFloatComplex));
-    tcf     = (magmaFloatComplex *) malloc( nframes*sizeof(magmaFloatComplex) );
+    tcf     = (magmaFloatComplex *) malloc( ntcfpoints*sizeof(magmaFloatComplex) );
     
     // allocate memory for arrays on the GPU
     cudaMalloc( &x_d     , natoms*sizeof(x[0]));
@@ -130,6 +135,7 @@ int main()
     magma_cmalloc( &proploc_d , nchrom*nchrom);
     magma_smalloc_cpu( &w  , nchrom );
     magma_smalloc( &w_d    , nchrom );
+    magma_cmalloc( &tcf_d, ntcfpoints);
     // For spectrum
     cudaMalloc( &omega_d, nomega*sizeof(float));
     cudaMalloc( &Sw_d   , nomega*sizeof(float));
@@ -279,7 +285,7 @@ int main()
                          MAGMA_C_ZERO, F_d, ldkappa, queue );
         }
 
-        // TODO: PUT IN DECAY!!
+
         // now calculate mFm for x y and z components
         // F_d * cmux_d = tmpmu_d
         magma_cgemv( MagmaNoTrans, (magma_int_t) nchrom, (magma_int_t) nchrom, MAGMA_C_ONE, F_d, ldkappa,
@@ -301,12 +307,34 @@ int main()
 
 
         // save the variables to print later and multiply by the decay
-        time2[frame] = dt * frame;
-        tcf[frame]   = MAGMA_C_MUL( MAGMA_C_ADD( MAGMA_C_ADD(tcfx,tcfy) , tcfz ), MAGMA_C_MAKE( exp( -1.0*frame*dt / (2.0 * t1)), 0));
+        time2[nframes+frame-1] = dt * frame;
+        time2[nframes-frame-1] = -1.0*dt * frame;
+        tcftmp     = MAGMA_C_ADD( tcfx  , tcfy );
+        tcftmp     = MAGMA_C_ADD( tcftmp, tcfz );
+        dcy        = MAGMA_C_MAKE(exp( -1.0 * (frame-frame0) * dt / ( 2.0 * t1 )), 0);
+        tcf[nframes-frame-1] = MAGMA_C_MUL( tcftmp, dcy );
+        tcf[nframes+frame-1] = MAGMA_C_CONJ(MAGMA_C_MUL( tcftmp, dcy ));
+
     }
 
 
+    // write time correlation function in the time domain
+    FILE *rtcf = fopen("tcf_real.dat", "w");
+    FILE *itcf = fopen("tcf_imag.dat", "w");
+    for ( int i = 0; i < ntcfpoints; i++ )
+    {
+        fprintf( rtcf, "%f %f \n", time2[i], MAGMA_C_REAL( tcf[i] ) );
+        fprintf( itcf, "%f %f \n", time2[i], MAGMA_C_IMAG( tcf[i] ) );
+    }
+    fclose( rtcf );
+    fclose( itcf );
+ 
 
+    // fourier transform the time correlation function IN PLACE
+    cufftPlan1d( &plan, ntcfpoints, CUFFT_C2C, 1);
+    cudaMemcpy( tcf_d, tcf, ntcfpoints*sizeof(magmaFloatComplex), cudaMemcpyHostToDevice );
+    cufftExecC2C( plan, tcf_d, tcf_d, CUFFT_FORWARD );
+    cudaMemcpy( tcf, tcf_d, ntcfpoints*sizeof(magmaFloatComplex), cudaMemcpyDeviceToHost );
 
 
     // write the spectral density to file
@@ -318,18 +346,17 @@ int main()
     }
     fclose(spec_density);
 
-    // write time correlation function
-    FILE *rtcf = fopen("tcf_real.dat", "w");
-    FILE *itcf = fopen("tcf_imag.dat", "w");
-    for ( frame = frame0; frame < framelast; frame++ )
+
+    FILE *spec_lineshape = fopen("spectral_lineshape.dat", "w");
+    float factor = 1.0;//HBAR*PI/(dt * nframes);
+    for ( int i = 0; i < ntcfpoints; i++)
     {
-        fprintf( rtcf, "%f %f \n", time2[frame], MAGMA_C_REAL( tcf[frame] ) );
-        fprintf( itcf, "%f %f \n", time2[frame], MAGMA_C_IMAG( tcf[frame] ) );
+        fprintf(spec_lineshape, "%f %f\n", i*factor+avef, MAGMA_C_REAL(tcf[i]));//MAGMA_C_REAL(tcf));
     }
-    fclose( rtcf );
-    fclose( itcf );
- 
-    
+    fclose(spec_lineshape);
+
+
+
     // free memory on the CPU and GPU
     magma_queue_destroy( queue );
 
@@ -351,6 +378,7 @@ int main()
     cudaFree(MUZ_d);
     cudaFree(omega_d);
     cudaFree(Sw_d);
+    cudaFree(tcf_d);
  
     magma_free(eproj_d);
     magma_free(kappa_d);
