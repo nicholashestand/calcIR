@@ -25,30 +25,33 @@ int main()
     // User input
     // TODO: make to get from user instead of hardcode
     const char  *gmxf         = (const char *)"./n216/traj_comp.xtc"; // trajectory file
-    const int   frame0        = 0;      // beginning frame to read
-    const int   framelast     = 1000;   // last frame to read
+    const float dt            = 0.010;  // dt between frames in xtc file (in ps)
+    const int   ntcfpoints    = 400  ;  // the number of tcf points for each spectrum
+    const int   nsamples      = 2   ;   // number of samples to average for the total spectrum
+    const int   sampleEvery   = 50  ;   // sample a new configuration every sampleEvery ps. Note ntcfpoints*dt must be less than sampleEvery.
+
+    const float t1            = 0.260;  // relaxation time ( in ps )
+    const float avef          = 3400.0; // the approximate average stretch frequency to get rid of high frequency oscillations in the time correlation function
+    const int   omegaStart    = 2000;   // starting frequency for spectral density
+    const int   omegaStop     = 5000;   // ending frequency for spectral density
+    const int   omegaStep     = 5;      // resolution for spectral density
+
     const int   natom_mol     = 4;      // Atoms per water molecule  :: MODEL DEPENDENT
     const int   nchrom_mol    = 2;      // Chromophores per molecule :: TWO for stretch -- ONE for bend
-    const float t1            = 0.260;  // relaxation time
-    const float avef          = 3400.0; // the approximate average stretch frequency to get rid of high frequency oscillations in the time correlation function
-    const float dt            = 0.010;  // dt in ps
-    const int   omegaStart    = 2800;   // starting frequency for spectral density
-    const int   omegaStop     = 4000;   // ending frequency for spectral density
-    const int   omegaStep     = 5 ;     // resolution for spectral density
+ 
 
 
     // Some useful variables and constants
     int               natoms, nmol, frame, nchrom;
-    const int         nframes     = framelast - frame0;                         // number of frames
-    const int         ntcfpoints  = nframes;                                    // number of points for the time correlation function
     const int         ntcfpointsR = (ntcfpoints - 1)*2;                         // number of points for the real fourier transform
     const int         nomega      = ( omegaStop - omegaStart ) / omegaStep + 1; // number of frequencies for the spectral density
+    int               currentSample = 0;                                        // current sample
 
     // Trajectory stuff for the CPU
     rvec        *x;                     // Position vector
     matrix      box;                    // Box vectors
     float       boxl, gmxtime, prec;    // Box lengths, time at current frame, precision of xtf file
-    int         step;                   // The current step number
+    int         step, xdrinfo;          // The current step number
 
     // Some variables for the GPU
     rvec                *x_d;                       // positions
@@ -77,6 +80,7 @@ int main()
     float       *w_d;                   // Eigenvalues on the GPU
     float       *omega, *omega_d;       // Frequencies on CPU and GPU
     float       *Sw, *Sw_d;             // Spectral density on CPU and GPU
+    float       *tmpSw;                 // Temporary spectral density
 
     // variables for TCF
     magmaFloatComplex *F, *F_d;             // F matrix on CPU and GPU
@@ -85,7 +89,9 @@ int main()
     magmaFloatComplex tcfx, tcfy, tcfz;     // Time correlation function, polarized
     magmaFloatComplex dcy, tcftmp;          // Decay constant and a temporary variable for the tcf
     magmaFloatComplex *tcf, *tcf_d;         // Time correlation function
+    magmaFloatComplex *tmptcf;              // A temporary function for time correlation function
     float             *Ftcf, *Ftcf_d;       // Fourier transformed time correlation function
+    float             *tmpFtcf;             // Temporary Fourier transformed time correlation function
     float             *time;                // Time array for tcf
     float             arg;                  // argument of exponential
 
@@ -133,10 +139,13 @@ int main()
     // allocate memory for arrays on the CPU
     x       = (rvec*)               malloc( natoms    *    sizeof(x[0] ));
     omega   = (float *)             malloc( nomega    *    sizeof(float));
-    Sw      = (float *)             malloc( nomega    *    sizeof(float));
+    Sw      = (float *)             calloc( nomega       , sizeof(float));
+    tmpSw   = (float *)             malloc( nomega    *    sizeof(float));
     time    = (float *)             malloc( ntcfpoints*    sizeof(float));
-    Ftcf    = (float *)             malloc( ntcfpointsR*   sizeof(float*));
-    tcf     = (magmaFloatComplex *) malloc( ntcfpoints*    sizeof(magmaFloatComplex));
+    Ftcf    = (float *)             calloc( ntcfpointsR  , sizeof(float*));
+    tmpFtcf = (float *)             malloc( ntcfpointsR*   sizeof(float*));
+    tmptcf  = (magmaFloatComplex *) malloc( ntcfpoints*    sizeof(magmaFloatComplex));
+    tcf     = (magmaFloatComplex *) calloc( ntcfpoints   , sizeof(magmaFloatComplex));
     F       = (magmaFloatComplex *) calloc( nchrom*nchrom, sizeof(magmaFloatComplex));
     propeig = (magmaFloatComplex *) calloc( nchrom*nchrom, sizeof(magmaFloatComplex));
     
@@ -168,189 +177,244 @@ int main()
 
     // ***          END MEMORY ALLOCATION               *** //
     // **************************************************** //
-
-
-
-
+    
 
     // **************************************************** //
-    // ***         MAIN LOOP OVER TRAJECTORY            *** //
-    for ( frame=frame0; frame<framelast; frame++ ){
+    // ***          OUTER LOOP OVER SAMPLES             *** //
+
+    while( currentSample < nsamples )
+    {
+        // search trajectory for current sample starting point
+        xdrinfo = read_xtc( trj, natoms, &step, &gmxtime, box, x, &prec );
+        if ( xdrinfo != 0 )
+        {
+            printf("WARNING:: read_xtc returned error %d.\nIs the trajectory long enough?\n", xdrinfo);
+            exit(0);
+        }
+        if ( currentSample * sampleEvery == (int) gmxtime )
+        {
+            printf("Now processing sample %d starting at %.2f ps\n", currentSample, gmxtime );
+
+
+        // **************************************************** //
+        // ***         MAIN LOOP OVER TRAJECTORY            *** //
+        for ( frame = 0; frame < ntcfpoints; frame++ )
+        {
 
 
 
+            // ***          Get Info About The System           *** //
 
-        // ***          Get Info About The System           *** //
+            // read the current frame from the trajectory file and copy to device memory
+            if ( frame != 0 ){
+                // note it was read in the outer loop if we are at frame 0
+                read_xtc( trj, natoms, &step, &gmxtime, box, x, &prec );
+            }
+            cudaMemcpy( x_d, x, natoms*sizeof(x[0]), cudaMemcpyHostToDevice );
+            boxl = box[0][0];   // assume a square box NOTE: CHANGE IF NOT THE CASE
 
-        // read the current frame from the trajectory file and copy to device memory
-        read_xtc( trj, natoms, &step, &gmxtime, box, x, &prec );
-        cudaMemcpy( x_d, x, natoms*sizeof(x[0]), cudaMemcpyHostToDevice );
-        boxl = box[0][0];   // assume a square box NOTE: CHANGE IF NOT THE CASE
 
+            // launch kernel to calculate the electric field projection along OH bonds
+            get_eproj_GPU <<<numBlocks,blockSize>>> ( x_d, boxl, natoms, natom_mol, nchrom, nchrom_mol, nmol, eproj_d );
 
-        // launch kernel to calculate the electric field projection along OH bonds
-        get_eproj_GPU <<<numBlocks,blockSize>>> ( x_d, boxl, natoms, natom_mol, nchrom, nchrom_mol, nmol, eproj_d );
-
-        // launch kernel to build the exciton Hamiltonian
-        get_kappa_GPU <<<numBlocks,blockSize>>> ( x_d, boxl, natoms, natom_mol, nchrom, nchrom_mol, nmol, eproj_d, 
+            // launch kernel to build the exciton Hamiltonian
+            get_kappa_GPU <<<numBlocks,blockSize>>> ( x_d, boxl, natoms, natom_mol, nchrom, nchrom_mol, nmol, eproj_d, 
                                                   kappa_d, mux_d, muy_d, muz_d );
 
-        // ***          Done getting System Info            *** //
+            // ***          Done getting System Info            *** //
 
 
 
 
-        // ***          Diagonalize the Hamiltonian         *** //
+            // ***          Diagonalize the Hamiltonian         *** //
 
-        // if the first time, query for optimal workspace dimensions
-        if ( frame == frame0)
-        {
-            magma_ssyevd_gpu( MagmaVec, MagmaUpper, (magma_int_t) nchrom, NULL, ldkappa, 
-                              NULL, NULL, (magma_int_t) nchrom, aux_work, -1, aux_iwork, -1, &info );
-
-            lwork   = (magma_int_t) aux_work[0];
-            liwork  = aux_iwork[0];
-
-            // make space for work arrays and eigenvalues and other stuff
-            magma_smalloc_cpu   ( &w  , (magma_int_t) nchrom );
-            magma_smalloc_pinned( &wA , (magma_int_t) nchrom*ldkappa );
-            magma_smalloc_pinned( &work , lwork  );
-            magma_imalloc_cpu   ( &iwork, liwork );
-        }
-        magma_ssyevd_gpu( MagmaVec, MagmaUpper, (magma_int_t) nchrom, kappa_d, ldkappa,
-                          w, wA, ldkappa, work, lwork, iwork, liwork, &info );
-
-        // ***          Done with the Diagonalization       *** //
-
-
-
-
-        // ***              The Spectral Density            *** //
-
-        if ( frame == frame0 ){
-
-            // project the transition dipole moments onto the eigenbasis
-            // MU_d = kappa_d**T x mu_d 
-            magma_sgemv( MagmaTrans, (magma_int_t) nchrom, (magma_int_t) nchrom, 
-                         1.0, kappa_d, ldkappa, mux_d, 1, 0.0, MUX_d, 1, queue);
-            magma_sgemv( MagmaTrans, (magma_int_t) nchrom, (magma_int_t) nchrom, 
-                         1.0, kappa_d, ldkappa, muy_d, 1, 0.0, MUY_d, 1, queue);
-            magma_sgemv( MagmaTrans, (magma_int_t) nchrom, (magma_int_t) nchrom, 
-                         1.0, kappa_d, ldkappa, muz_d, 1, 0.0, MUZ_d, 1, queue);
-
-            // Define the spectral range of interest and initialize spectral arrays
-            for (int i = 0; i < nomega; i++)
+            // if the first time, query for optimal workspace dimensions
+            if ( frame == 0 && currentSample == 0)
             {
-                omega[i] = (float) (omegaStart + omegaStep*i); 
-                Sw[i]    = 0.0;
+                magma_ssyevd_gpu( MagmaVec, MagmaUpper, (magma_int_t) nchrom, NULL, ldkappa, 
+                                  NULL, NULL, (magma_int_t) nchrom, aux_work, -1, aux_iwork, -1, &info );
+
+                lwork   = (magma_int_t) aux_work[0];
+                liwork  = aux_iwork[0];
+
+                // make space for work arrays and eigenvalues and other stuff
+                magma_smalloc_cpu   ( &w  , (magma_int_t) nchrom );
+                magma_smalloc_pinned( &wA , (magma_int_t) nchrom*ldkappa );
+                magma_smalloc_pinned( &work , lwork  );
+                magma_imalloc_cpu   ( &iwork, liwork );
             }
+            magma_ssyevd_gpu( MagmaVec, MagmaUpper, (magma_int_t) nchrom, kappa_d, ldkappa,
+                              w, wA, ldkappa, work, lwork, iwork, liwork, &info );
 
-            // Copy relevant variables to device memory
-            cudaMemcpy( omega_d, omega, nomega*sizeof(float), cudaMemcpyHostToDevice );
-            cudaMemcpy( w_d    , w    , nchrom*sizeof(float), cudaMemcpyHostToDevice );
-            cudaMemcpy( Sw_d   , Sw   , nomega*sizeof(float), cudaMemcpyHostToDevice );
+            // ***          Done with the Diagonalization       *** //
 
-            // calculate the spectral density on the GPU and copy back to the CPU
-            get_spectral_density<<<numBlocks,blockSize>>>( w_d, MUX_d, MUY_d, MUZ_d, omega_d, Sw_d, 
+
+
+
+            // ***              The Spectral Density            *** //
+
+            if ( frame == 0 ){
+
+                // project the transition dipole moments onto the eigenbasis
+                // MU_d = kappa_d**T x mu_d 
+                magma_sgemv( MagmaTrans, (magma_int_t) nchrom, (magma_int_t) nchrom, 
+                             1.0, kappa_d, ldkappa, mux_d, 1, 0.0, MUX_d, 1, queue);
+                magma_sgemv( MagmaTrans, (magma_int_t) nchrom, (magma_int_t) nchrom, 
+                             1.0, kappa_d, ldkappa, muy_d, 1, 0.0, MUY_d, 1, queue);
+                magma_sgemv( MagmaTrans, (magma_int_t) nchrom, (magma_int_t) nchrom, 
+                             1.0, kappa_d, ldkappa, muz_d, 1, 0.0, MUZ_d, 1, queue);
+
+                // Define the spectral range of interest and initialize spectral arrays
+                for (int i = 0; i < nomega; i++)
+                {
+                    omega[i] = (float) (omegaStart + omegaStep*i); 
+                    tmpSw[i] = 0.0;
+                }
+
+                // Copy relevant variables to device memory
+                cudaMemcpy( omega_d, omega, nomega*sizeof(float), cudaMemcpyHostToDevice );
+                cudaMemcpy( w_d    , w    , nchrom*sizeof(float), cudaMemcpyHostToDevice );
+                cudaMemcpy( Sw_d   , tmpSw, nomega*sizeof(float), cudaMemcpyHostToDevice );
+
+                // calculate the spectral density on the GPU and copy back to the CPU
+                get_spectral_density<<<numBlocks,blockSize>>>( w_d, MUX_d, MUY_d, MUZ_d, omega_d, Sw_d, 
                                                             nomega, nchrom, t1 );
-            cudaMemcpy( Sw, Sw_d, nomega*sizeof(float), cudaMemcpyDeviceToHost );
-        }
+                cudaMemcpy( tmpSw, Sw_d, nomega*sizeof(float), cudaMemcpyDeviceToHost );
 
-        // ***           Done the Spectral Density          *** //
-
-
-
-
-        // ***           Time Correlation Function          *** //
-
-        // cast variables to complex to calculate time correlation function (which is complex)
-        cast_to_complex_GPU <<<numBlocks,blockSize>>> ( kappa_d, ckappa_d, nchrom*nchrom );
-        cast_to_complex_GPU <<<numBlocks,blockSize>>> ( mux_d  , cmux_d  , nchrom        );
-        cast_to_complex_GPU <<<numBlocks,blockSize>>> ( muy_d  , cmuy_d  , nchrom        );
-        cast_to_complex_GPU <<<numBlocks,blockSize>>> ( muz_d  , cmuz_d  , nchrom        );
-
-
-        // First calculate the propigation matrix in the local basis
-        if ( frame == frame0 )
-        {
-            // initialize the F matrix at t=0 to the unit matrix
-            for ( int i = 0; i < nchrom; i ++ )
-            {
-                // NOTE: off diagonal elements were zeroed on allocation using calloc
-                F[ i*nchrom + i] = MAGMA_C_MAKE(1.0,0.0);
-            }
-            // copy the F matrix to device memory -- after initialization, won't need back in host memory
-            cudaMemcpy( F_d, F, nchrom*nchrom*sizeof(magmaFloatComplex), cudaMemcpyHostToDevice );
-        }
-        else
-        {
-            // build the propigator
-            for ( int i = 0; i < nchrom; i++ )
-            {
-                // note off diagonal elements were zeroed on allocation using calloc and they shouldnt change
-                // but be careful here... P = exp(iwt/hbar)
-                arg   = (w[i] - avef)* dt / HBAR;
-                propeig[ i*nchrom + i ] = MAGMA_C_MAKE( cos(arg), sin(arg) );
+                // Copy temporary to persistant to get average spectral density over samples
+                for (int i = 0; i < nomega; i++ )
+                {
+                    Sw[i] += tmpSw[i];
+                }
             }
 
-            // copy the propigator to the gpu and convert to the local basis                
-            cudaMemcpy( propeig_d, propeig, nchrom*nchrom*sizeof(magmaFloatComplex), cudaMemcpyHostToDevice );
+            // ***           Done the Spectral Density          *** //
 
-            // ckappa_d * propeig_d = proploc_d
-            magma_cgemm( MagmaNoTrans, MagmaNoTrans, (magma_int_t) nchrom, (magma_int_t) nchrom, 
-                         (magma_int_t) nchrom, MAGMA_C_ONE, ckappa_d, ldkappa, propeig_d, ldkappa,
-                          MAGMA_C_ZERO, proploc_d, ldkappa, queue );
 
-            // proploc_d * ckappa_d **T = proploc_d
-            magma_cgemm( MagmaNoTrans, MagmaTrans, (magma_int_t) nchrom, (magma_int_t) nchrom, 
-                         (magma_int_t) nchrom, MAGMA_C_ONE, proploc_d, ldkappa, ckappa_d, ldkappa, 
-                         MAGMA_C_ZERO, proploc_d, ldkappa, queue );
 
-            // propigate the F matrix in the local basis
-            // proploc_d * F = F
-            magma_cgemm( MagmaNoTrans, MagmaNoTrans, (magma_int_t) nchrom, (magma_int_t) nchrom, 
-                         (magma_int_t) nchrom, MAGMA_C_ONE, proploc_d, ldkappa, F_d, ldkappa, 
-                         MAGMA_C_ZERO, F_d, ldkappa, queue );
+
+            // ***           Time Correlation Function          *** //
+
+            // cast variables to complex to calculate time correlation function (which is complex)
+            cast_to_complex_GPU <<<numBlocks,blockSize>>> ( kappa_d, ckappa_d, nchrom*nchrom );
+            cast_to_complex_GPU <<<numBlocks,blockSize>>> ( mux_d  , cmux_d  , nchrom        );
+            cast_to_complex_GPU <<<numBlocks,blockSize>>> ( muy_d  , cmuy_d  , nchrom        );
+            cast_to_complex_GPU <<<numBlocks,blockSize>>> ( muz_d  , cmuz_d  , nchrom        );
+
+
+            // First calculate the propigation matrix in the local basis
+            if ( frame == 0 )
+            {
+                // initialize the F matrix at t=0 to the unit matrix
+                for ( int i = 0; i < nchrom; i ++ )
+                {
+                    // NOTE: off diagonal elements were zeroed on allocation using calloc
+                    F[ i*nchrom + i] = MAGMA_C_ONE;
+                }
+                // copy the F matrix to device memory -- after initialization, won't need back in host memory
+                cudaMemcpy( F_d, F, nchrom*nchrom*sizeof(magmaFloatComplex), cudaMemcpyHostToDevice );
+            }
+            else
+            {
+                // build the propigator
+                for ( int i = 0; i < nchrom; i++ )
+                {
+                    // note off diagonal elements were zeroed on allocation using calloc and they shouldnt change
+                    // but be careful here... P = exp(iwt/hbar)
+                    arg   = (w[i] - avef)* dt / HBAR;
+                    propeig[ i*nchrom + i ] = MAGMA_C_MAKE( cos(arg), sin(arg) );
+                }
+
+                // copy the propigator to the gpu and convert to the local basis                
+                cudaMemcpy( propeig_d, propeig, nchrom*nchrom*sizeof(magmaFloatComplex), cudaMemcpyHostToDevice );
+
+                // ckappa_d * propeig_d = proploc_d
+                magma_cgemm( MagmaNoTrans, MagmaNoTrans, (magma_int_t) nchrom, (magma_int_t) nchrom, 
+                             (magma_int_t) nchrom, MAGMA_C_ONE, ckappa_d, ldkappa, propeig_d, ldkappa,
+                              MAGMA_C_ZERO, proploc_d, ldkappa, queue );
+
+                // proploc_d * ckappa_d **T = proploc_d
+                magma_cgemm( MagmaNoTrans, MagmaTrans, (magma_int_t) nchrom, (magma_int_t) nchrom, 
+                             (magma_int_t) nchrom, MAGMA_C_ONE, proploc_d, ldkappa, ckappa_d, ldkappa, 
+                             MAGMA_C_ZERO, proploc_d, ldkappa, queue );
+
+                // propigate the F matrix in the local basis
+                // proploc_d * F = F
+                magma_cgemm( MagmaNoTrans, MagmaNoTrans, (magma_int_t) nchrom, (magma_int_t) nchrom, 
+                             (magma_int_t) nchrom, MAGMA_C_ONE, proploc_d, ldkappa, F_d, ldkappa, 
+                             MAGMA_C_ZERO, F_d, ldkappa, queue );
+            }
+
+
+            // now calculate mFm for x y and z components
+            // F_d * cmux_d = tmpmu_d
+            magma_cgemv( MagmaNoTrans, (magma_int_t) nchrom, (magma_int_t) nchrom, MAGMA_C_ONE, F_d, ldkappa,
+                         cmux_d, 1, MAGMA_C_ZERO, tmpmu_d, 1, queue);
+            // tcfx = cmux_d**T * tmpmu_d
+            tcfx = magma_cdotu( (magma_int_t) nchrom, cmux_d, 1, tmpmu_d, 1, queue );
+
+            // F_d * cmuy_d = tmpmu_d
+            magma_cgemv( MagmaNoTrans, (magma_int_t) nchrom, (magma_int_t) nchrom, MAGMA_C_ONE, F_d, ldkappa,
+                         cmuy_d, 1, MAGMA_C_ZERO, tmpmu_d, 1, queue);
+            // tcfy = cmuy_d**T * tmpmu_d
+            tcfy = magma_cdotu( (magma_int_t) nchrom, cmuy_d, 1, tmpmu_d, 1, queue );
+
+            // F_d * cmuz_d = tmpmu_d
+            magma_cgemv( MagmaNoTrans, (magma_int_t) nchrom, (magma_int_t) nchrom, MAGMA_C_ONE, F_d, ldkappa,
+                         cmuz_d, 1, MAGMA_C_ZERO, tmpmu_d, 1, queue);
+            // tcfz = cmuz_d**T * tmpmu_d
+            tcfz = magma_cdotu( (magma_int_t) nchrom, cmuz_d, 1, tmpmu_d, 1, queue );
+
+
+            // save the variables to print later and multiply by the decay
+            time[frame]           = dt * frame;
+            tcftmp                = MAGMA_C_ADD( tcfx  , tcfy );
+            tcftmp                = MAGMA_C_ADD( tcftmp, tcfz );
+            dcy                   = MAGMA_C_MAKE(exp( -1.0 * frame * dt / ( 2.0 * t1 )), 0);
+            tmptcf[frame]         = MAGMA_C_MUL( tcftmp, dcy );
+
+            // ***        Done with Time Correlation            *** //
+
         }
 
+        // fourier transform the time correlation function on the GPU
+        /*cufftPlan1d( &plan, ntcfpoints, CUFFT_C2R, 1);
+        cudaMemcpy( tcf_d, tmptcf, ntcfpoints*sizeof(magmaFloatComplex), cudaMemcpyHostToDevice );
+        cufftExecC2R( plan, tcf_d, Ftcf_d );
+        cudaMemcpy( tmpFtcf, Ftcf_d, ntcfpointsR*sizeof(float), cudaMemcpyDeviceToHost );
+        cufftDestroy(plan);
+        */
 
-        // now calculate mFm for x y and z components
-        // F_d * cmux_d = tmpmu_d
-        magma_cgemv( MagmaNoTrans, (magma_int_t) nchrom, (magma_int_t) nchrom, MAGMA_C_ONE, F_d, ldkappa,
-                     cmux_d, 1, MAGMA_C_ZERO, tmpmu_d, 1, queue);
-        // tcfx = cmux_d**T * tmpmu_d
-        tcfx = magma_cdotu( (magma_int_t) nchrom, cmux_d, 1, tmpmu_d, 1, queue );
+        // copy fourier transform to persistant memory to calculate average spectrum
+        for ( int i = 0; i < ntcfpoints; i ++ )
+        {
+            Ftcf[i] = Ftcf[i] + tmpFtcf[i];
+            tcf[i]  = MAGMA_C_ADD( tcf[i] , tmptcf[i]);
+        }
 
-        // F_d * cmuy_d = tmpmu_d
-        magma_cgemv( MagmaNoTrans, (magma_int_t) nchrom, (magma_int_t) nchrom, MAGMA_C_ONE, F_d, ldkappa,
-                     cmuy_d, 1, MAGMA_C_ZERO, tmpmu_d, 1, queue);
-        // tcfy = cmuy_d**T * tmpmu_d
-        tcfy = magma_cdotu( (magma_int_t) nchrom, cmuy_d, 1, tmpmu_d, 1, queue );
-
-        // F_d * cmuz_d = tmpmu_d
-        magma_cgemv( MagmaNoTrans, (magma_int_t) nchrom, (magma_int_t) nchrom, MAGMA_C_ONE, F_d, ldkappa,
-                     cmuz_d, 1, MAGMA_C_ZERO, tmpmu_d, 1, queue);
-        // tcfz = cmuz_d**T * tmpmu_d
-        tcfz = magma_cdotu( (magma_int_t) nchrom, cmuz_d, 1, tmpmu_d, 1, queue );
-
-
-        // save the variables to print later and multiply by the decay
-        time[frame]           = dt * frame;
-        tcftmp                = MAGMA_C_ADD( tcfx  , tcfy );
-        tcftmp                = MAGMA_C_ADD( tcftmp, tcfz );
-        dcy                   = MAGMA_C_MAKE(exp( -1.0 * (frame-frame0) * dt / ( 2.0 * t1 )), 0);
-        tcf[frame]            = MAGMA_C_MUL( tcftmp, dcy );
-
-        // ***        Done with Time Correlation            *** //
-
-    }
+        // done with current sample, move to next
+        currentSample +=1;
+        }
+    } // end outer loop
 
     // fourier transform the time correlation function on the GPU
     cufftPlan1d( &plan, ntcfpoints, CUFFT_C2R, 1);
     cudaMemcpy( tcf_d, tcf, ntcfpoints*sizeof(magmaFloatComplex), cudaMemcpyHostToDevice );
     cufftExecC2R( plan, tcf_d, Ftcf_d );
     cudaMemcpy( Ftcf, Ftcf_d, ntcfpointsR*sizeof(float), cudaMemcpyDeviceToHost );
+    cufftDestroy(plan);
 
+
+    // normalize spectra by number of samples
+    for ( int i = 0; i < ntcfpoints; i++ )
+    {
+        Ftcf[i] = Ftcf[i] / (float) nsamples; 
+        tcf[i]  = MAGMA_C_DIV( tcf[i] , MAGMA_C_MAKE( nsamples, 0.0 ));
+    }
+    for ( int i = 0; i < nomega; i++)
+    {
+        Sw[i]   = Sw[i] / (float) nsamples;
+    }
 
     // write time correlation function
     // TODO:: allow user to define custom names
@@ -397,8 +461,10 @@ int main()
     free(x);
     free(omega);
     free(Sw);
+    free(tmpSw);
     free(time);
     free(Ftcf);
+    free(tmpFtcf);
     free(tcf);
     free(F);
     free(propeig);
@@ -687,12 +753,16 @@ void get_kappa_GPU( rvec *x, float boxl, int natoms, int natom_mol, int nchrom, 
             // intramolecular coupling
             else if ( m == n )
             {
+                //kappa[ chromn * nchrom + chromm ] = 0.0;
+                //continue;
                 kappa[chromn*nchrom + chromm]   =  (-1361.0 + 27165*(En + Em))*xn*xm - 1.887*pn*pm;
             }
 
             // intermolecular coupling
             else
             {
+                //kappa[ chromn*nchrom + chromm ] = 0.0;
+                //continue;
                 // calculate the distance between dipoles
                 // they are located 0.67 A from the oxygen along the OH bond
 
