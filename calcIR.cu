@@ -376,19 +376,9 @@ int main()
             // ***        Done with Time Correlation            *** //
 
         }
-
-        // fourier transform the time correlation function on the GPU
-        /*cufftPlan1d( &plan, ntcfpoints, CUFFT_C2R, 1);
-        cudaMemcpy( tcf_d, tmptcf, ntcfpoints*sizeof(magmaFloatComplex), cudaMemcpyHostToDevice );
-        cufftExecC2R( plan, tcf_d, Ftcf_d );
-        cudaMemcpy( tmpFtcf, Ftcf_d, ntcfpointsR*sizeof(float), cudaMemcpyDeviceToHost );
-        cufftDestroy(plan);
-        */
-
-        // copy fourier transform to persistant memory to calculate average spectrum
+        // copy time correlation function to persistant memory to calculate average spectrum
         for ( int i = 0; i < ntcfpoints; i ++ )
         {
-            Ftcf[i] = Ftcf[i] + tmpFtcf[i];
             tcf[i]  = MAGMA_C_ADD( tcf[i] , tmptcf[i]);
         }
 
