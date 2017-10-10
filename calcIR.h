@@ -17,14 +17,18 @@ void get_spectral_density( double *w, double *MUX, double *MUY, double *MUZ, dou
 
 __global__
 void cast_to_complex_GPU( double *s_d, magmaDoubleComplex *c_d, int n );
+//TODO:: change int to magma_int_t in cast and copy functions
+
+__global__
+void copy_complex_GPU( magmaDoubleComplex *out_d, magmaDoubleComplex *in_d, int n );
 
 __host__ __device__
-float minImage( float dx, float boxl );
+double minImage( double dx, double boxl );
 
 __host__ __device__
-float mag3( float dx[3] );
+double mag3( double dx[3] );
 
 __host__ __device__
-float dot3( float x[3], float y[3] );
+double dot3( double x[3], double y[3] );
 
 #endif

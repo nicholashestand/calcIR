@@ -25,7 +25,7 @@ int main()
 
     // User input
     // TODO: make to get from user instead of hardcode
-    const char   *gmxf         = (const char *)"./n1/traj_comp.xtc"; // trajectory file
+    const char   *gmxf         = (const char *)"./n216/traj_comp.xtc"; // trajectory file
     const double dt            = 0.010;  // dt between frames in xtc file (in ps)
     const int    ntcfpoints    = 500 ;   // the number of tcf points for each spectrum
     const int    nsamples      = 1   ;   // number of samples to average for the total spectrum
@@ -33,14 +33,14 @@ int main()
 
     const double t1            = 0.260;  // relaxation time ( in ps )
     const double avef          = 3415.2; // the approximate average stretch frequency to get rid of high frequency oscillations in the time correlation function
-    const int   omegaStart    = 2000;   // starting frequency for spectral density
-    const int   omegaStop     = 5000;   // ending frequency for spectral density
-    const int   omegaStep     = 5;      // resolution for spectral density
+    const int   omegaStart     = 2000;   // starting frequency for spectral density
+    const int   omegaStop      = 5000;   // ending frequency for spectral density
+    const int   omegaStep      = 5;      // resolution for spectral density
 
-    const int   natom_mol     = 4;      // Atoms per water molecule  :: MODEL DEPENDENT
-    const int   nchrom_mol    = 2;      // Chromophores per molecule :: TWO for stretch -- ONE for bend
+    const int   natom_mol      = 4;      // Atoms per water molecule  :: MODEL DEPENDENT
+    const int   nchrom_mol     = 2;      // Chromophores per molecule :: TWO for stretch -- ONE for bend
     
-    const int   nzeros        = 2*12800;  // zeros for padding fft
+    const int   nzeros         = 25600;  // zeros for padding fft -- what was used by Yicun
  
 
 
@@ -86,19 +86,19 @@ int main()
     double      *tmpSw;                 // Temporary spectral density
 
     // variables for TCF
-    magmaDoubleComplex *F, *F_d;             // F matrix on CPU and GPU
-    magmaDoubleComplex *propeig, *propeig_d; // Propigator matrix on CPU and GPU
-    magmaDoubleComplex *proploc, *proploc_d;
-    magmaDoubleComplex *ckappa_d;           // Propigator matrix in the local basis and a complex version of kappa
+    magmaDoubleComplex *F, *F_d, *Ftmp_d;    // F matrix on CPU and GPU
+    magmaDoubleComplex *prop, *prop_d;       // Propigator matrix on CPU and GPU
+    magmaDoubleComplex *ctmpmat_d;           // temporary complex matrix for matrix multiplications on gpu
+    magmaDoubleComplex *ckappa_d;            // A complex version of kappa // TODO: CAN WE JUST CAST AS TYPE INSTEAD OF HAVING VARIABLES FOR THIS?
     magmaDoubleComplex tcfx, tcfy, tcfz;     // Time correlation function, polarized
     magmaDoubleComplex dcy, tcftmp;          // Decay constant and a temporary variable for the tcf
-    magmaDoubleComplex *pdtcf, *pdtcf_d;   // padded time correlation functions
+    magmaDoubleComplex *pdtcf, *pdtcf_d;     // padded time correlation functions
     magmaDoubleComplex *tcf, *tcf_d;         // Time correlation function
     magmaDoubleComplex *tmptcf;              // A temporary function for time correlation function
     double             *Ftcf, *Ftcf_d;       // Fourier transformed time correlation function
-    double            *tmpFtcf;             // Temporary Fourier transformed time correlation function
-    double            *time;                // Time array for tcf
-    double            arg;                  // argument of exponential
+    double             *tmpFtcf;             // Temporary Fourier transformed time correlation function
+    double             *time;                // Time array for tcf
+    double             arg;                  // argument of exponential
 
     // For fft on gpu
     cufftHandle       plan;
@@ -123,11 +123,8 @@ int main()
     nchrom       = nmol * nchrom_mol;
     ldkappa      = (magma_int_t) nchrom;
 
-
     printf("Found %d atoms and %d molecules.\n",natoms, nmol);
     printf("Found %d chromophores.\n",nchrom);
-
-
 
 
     // ***              MEMORY ALLOCATION               *** //
@@ -152,8 +149,8 @@ int main()
     tmptcf  = (magmaDoubleComplex *) malloc( ntcfpoints*    sizeof(magmaDoubleComplex));
     tcf     = (magmaDoubleComplex *) calloc( ntcfpoints   , sizeof(magmaDoubleComplex));
     F       = (magmaDoubleComplex *) calloc( nchrom*nchrom, sizeof(magmaDoubleComplex));
-    propeig = (magmaDoubleComplex *) calloc( nchrom*nchrom, sizeof(magmaDoubleComplex));
-    proploc = (magmaDoubleComplex *) calloc( nchrom*nchrom, sizeof(magmaDoubleComplex));
+    prop    = (magmaDoubleComplex *) calloc( nchrom*nchrom, sizeof(magmaDoubleComplex));
+
 
     
     // allocate memory for arrays on the GPU
@@ -179,8 +176,9 @@ int main()
     magma_dmalloc( &kappa_d     , ldkappa*nchrom);
     magma_zmalloc( &ckappa_d    , nchrom*nchrom);
     magma_zmalloc( &F_d         , nchrom*nchrom);
-    magma_zmalloc( &propeig_d   , nchrom*nchrom);
-    magma_zmalloc( &proploc_d   , nchrom*nchrom);
+    magma_zmalloc( &Ftmp_d      , nchrom*nchrom);
+    magma_zmalloc( &prop_d      , nchrom*nchrom);
+    magma_zmalloc( &ctmpmat_d   , nchrom*nchrom);
     magma_dmalloc( &w_d         , nchrom );
     magma_zmalloc( &tcf_d       , ntcfpoints);
 
@@ -213,6 +211,7 @@ int main()
 
 
 
+            // ---------------------------------------------------- //
             // ***          Get Info About The System           *** //
 
             // read the current frame from the trajectory file and copy to device memory
@@ -232,10 +231,12 @@ int main()
                                                       kappa_d, mux_d, muy_d, muz_d );
 
             // ***          Done getting System Info            *** //
+            // ---------------------------------------------------- //
 
 
 
 
+            // ---------------------------------------------------- //
             // ***          Diagonalize the Hamiltonian         *** //
 
             // if the first time, query for optimal workspace dimensions
@@ -257,10 +258,11 @@ int main()
                               w, wA, ldkappa, work, lwork, iwork, liwork, &info );
 
             // ***          Done with the Diagonalization       *** //
+            // ---------------------------------------------------- //
 
 
 
-
+            // ---------------------------------------------------- //
             // ***              The Spectral Density            *** //
 
             if ( frame == 0 ){
@@ -299,9 +301,11 @@ int main()
             }
 
             // ***           Done the Spectral Density          *** //
+            // ---------------------------------------------------- //
 
 
 
+            // ---------------------------------------------------- //
 
             // ***           Time Correlation Function          *** //
 
@@ -328,9 +332,9 @@ int main()
                 cudaMemcpy( F_d, F, nchrom*nchrom*sizeof(magmaDoubleComplex), cudaMemcpyHostToDevice );
 
                 // set the transition dipole moment at t=0
-                cast_to_complex_GPU <<<numBlocks,blockSize>>> ( mux_d  , cmux0_d  , nchrom        );
-                cast_to_complex_GPU <<<numBlocks,blockSize>>> ( muy_d  , cmuy0_d  , nchrom        );
-                cast_to_complex_GPU <<<numBlocks,blockSize>>> ( muz_d  , cmuz0_d  , nchrom        );
+                cast_to_complex_GPU <<<numBlocks,blockSize>>> ( mux_d  , cmux0_d  , nchrom );
+                cast_to_complex_GPU <<<numBlocks,blockSize>>> ( muy_d  , cmuy0_d  , nchrom );
+                cast_to_complex_GPU <<<numBlocks,blockSize>>> ( muz_d  , cmuz0_d  , nchrom );
             }
             else
             {
@@ -340,84 +344,79 @@ int main()
                     // zero matrix
                     for ( int j = 0; j < nchrom; j ++ )
                     {
-                        propeig[ i*nchrom + j] = MAGMA_Z_ZERO;
+                        prop[ i*nchrom + j] = MAGMA_Z_ZERO;
                     }
                     // P = exp(iwt/hbar)
                     arg   = ((w[i] - avef)* dt / HBAR);
-                    propeig[ i*nchrom + i ] = MAGMA_Z_MAKE( cos(arg), sin(arg) );
+                    prop[ i*nchrom + i ] = MAGMA_Z_MAKE( cos(arg), sin(arg) );
                 }
 
                 // copy the propigator to the gpu and convert to the local basis                
-                cudaMemcpy( propeig_d, propeig, nchrom*nchrom*sizeof(magmaDoubleComplex), cudaMemcpyHostToDevice );
+                cudaMemcpy( prop_d, prop, nchrom*nchrom*sizeof(magmaDoubleComplex), cudaMemcpyHostToDevice );
 
-                // ckappa_d * propeig_d = proploc_d
+                // ctmpmat_d = ckappa_d * prop_d
                 magma_zgemm( MagmaNoTrans, MagmaNoTrans, (magma_int_t) nchrom, (magma_int_t) nchrom, 
-                             (magma_int_t) nchrom, MAGMA_Z_ONE, ckappa_d, ldkappa, propeig_d, ldkappa,
-                              MAGMA_Z_ZERO, proploc_d, ldkappa, queue );
+                             (magma_int_t) nchrom, MAGMA_Z_ONE, ckappa_d, ldkappa, prop_d, ldkappa,
+                              MAGMA_Z_ZERO, ctmpmat_d, ldkappa, queue );
 
-                // proploc_d * ckappa_d **T = proploc_d
+                // prop_d = ctmpmat_d * ckappa_d **T 
                 magma_zgemm( MagmaNoTrans, MagmaTrans, (magma_int_t) nchrom, (magma_int_t) nchrom, 
-                             (magma_int_t) nchrom, MAGMA_Z_ONE, proploc_d, ldkappa, ckappa_d, ldkappa, 
-                             MAGMA_Z_ZERO, proploc_d, ldkappa, queue );
+                             (magma_int_t) nchrom, MAGMA_Z_ONE, ctmpmat_d, ldkappa, ckappa_d, ldkappa, 
+                             MAGMA_Z_ZERO, prop_d, ldkappa, queue );
 
                 // propigate the F matrix in the local basis
-                // proploc_d * F = F
+                // ctmpmat_d = prop_d * F
                 magma_zgemm( MagmaNoTrans, MagmaNoTrans, (magma_int_t) nchrom, (magma_int_t) nchrom, 
-                             (magma_int_t) nchrom, MAGMA_Z_ONE, proploc_d, ldkappa, F_d, ldkappa, 
-                             MAGMA_Z_ZERO, F_d, ldkappa, queue );
+                             (magma_int_t) nchrom, MAGMA_Z_ONE, prop_d, ldkappa, F_d, ldkappa, 
+                             MAGMA_Z_ZERO, ctmpmat_d, ldkappa, queue );
+                // copy the F matrix back from the temporary variable to F_d
+                copy_complex_GPU <<<numBlocks,blockSize>>> ( F_d  , ctmpmat_d  , nchrom*nchrom );
             }
-            // Some test with YICUN's code... everything looks okay for n=1, minus some floating point precision due to using different libraries
-            //cudaMemcpy( proploc , proploc_d, nchrom*nchrom*sizeof(magmaDoubleComplex), cudaMemcpyDeviceToHost );
-            //printf("frame=%d prop[0]=%g prop[1]=%g prop[2]=%g prop[3]=%g\n", frame, MAGMA_Z_REAL(proploc[0]), MAGMA_Z_REAL(proploc[1]), MAGMA_Z_REAL(proploc[2]), MAGMA_Z_REAL(proploc[3]));
-
-            //cudaMemcpy( F , F_d, nchrom*nchrom*sizeof(magmaDoubleComplex), cudaMemcpyDeviceToHost );
-            //printf("frame=%d F[0]=%g F[1]=%g F[2]=%g F[3]=%g\n", frame, MAGMA_Z_REAL(F[0]), MAGMA_Z_REAL(F[1]), MAGMA_Z_REAL(F[2]), MAGMA_Z_REAL(F[3]));
 
 
-
-            // now calculate mFm for x y and z components
-            // F_d * cmux_d = tmpmu_d
+            // calculate mFm for x y and z components
+            // tcfx = cmux0_d**T * F_d *cmux_d
+            // x
             magma_zgemv( MagmaNoTrans, (magma_int_t) nchrom, (magma_int_t) nchrom, MAGMA_Z_ONE, F_d, ldkappa,
                          cmux0_d, 1, MAGMA_Z_ZERO, tmpmu_d, 1, queue);
-            // tcfx = cmux0_d**T * tmpmu_d
             tcfx = magma_zdotu( (magma_int_t) nchrom, cmux_d, 1, tmpmu_d, 1, queue );
 
-            // F_d * cmuy_d = tmpmu_d
+            // y
             magma_zgemv( MagmaNoTrans, (magma_int_t) nchrom, (magma_int_t) nchrom, MAGMA_Z_ONE, F_d, ldkappa,
                          cmuy0_d, 1, MAGMA_Z_ZERO, tmpmu_d, 1, queue);
-            // tcfy = cmuy0_d**T * tmpmu_d
             tcfy = magma_zdotu( (magma_int_t) nchrom, cmuy_d, 1, tmpmu_d, 1, queue );
 
-            // F_d * cmuz_d = tmpmu_d
+            // z
             magma_zgemv( MagmaNoTrans, (magma_int_t) nchrom, (magma_int_t) nchrom, MAGMA_Z_ONE, F_d, ldkappa,
                          cmuz0_d, 1, MAGMA_Z_ZERO, tmpmu_d, 1, queue);
-            // tcfz = cmuz0_d**T * tmpmu_d
             tcfz = magma_zdotu( (magma_int_t) nchrom, cmuz_d, 1, tmpmu_d, 1, queue );
-
 
             // save the variables to print later and multiply by the decay
             time[frame]           = dt * frame;
             tcftmp                = MAGMA_Z_ADD( tcfx  , tcfy );
             tcftmp                = MAGMA_Z_ADD( tcftmp, tcfz );
-            dcy                   = MAGMA_Z_MAKE(exp( -1.0 * frame * dt / ( 2.0 * t1 )), 0);
-            //printf("dcy: %e rtcftmp: %e itcftmp: %e\n", MAGMA_Z_REAL(dcy), MAGMA_Z_REAL(tcftmp), MAGMA_Z_IMAG(tcftmp));
+            dcy                   = MAGMA_Z_MAKE(exp( -1.0 * frame * dt / ( 2.0 * t1 )), 0.0);
             tmptcf[frame]         = MAGMA_Z_MUL( tcftmp, dcy );
-
+ 
             // ***        Done with Time Correlation            *** //
+            // ---------------------------------------------------- //
 
         }
+
         // copy time correlation function to persistant memory to calculate average spectrum
         for ( int i = 0; i < ntcfpoints; i ++ )
         {
             tcf[i]  = MAGMA_Z_ADD( tcf[i] , tmptcf[i]);
-            // To compare with yicun
-            tcf[i]  = MAGMA_Z_DIV( tcf[i] , MAGMA_Z_MAKE(2.0,0.0));
         }
 
         // done with current sample, move to next
         currentSample +=1;
         }
     } // end outer loop
+
+
+    // close xdr file
+    xdrfile_close(trj);
 
 
     // pad the time correlation function with zeros, copy to device memory and perform fft
@@ -431,6 +430,7 @@ int main()
     {
         pdtcf[i+ntcfpoints] = MAGMA_Z_ZERO;
     }
+
     magma_zmalloc( &pdtcf_d    , ntcfpoints+nzeros);
     cudaMemcpy( pdtcf_d, pdtcf, (ntcfpoints+nzeros)*sizeof(magmaDoubleComplex), cudaMemcpyHostToDevice );
     cufftPlan1d( &plan, ntcfpoints+nzeros, CUFFT_Z2D, 1);
@@ -476,14 +476,14 @@ int main()
     {
         if ( -1*(i-ntcfpoints-nzeros)*factor + avef <= (double) omegaStop  )
         {
-            fprintf(spec_lineshape, "%e %e\n", -1*(i-ntcfpoints-nzeros)*factor + avef, Ftcf[i]);///(factor*ntcfpoints));
+            fprintf(spec_lineshape, "%e %e\n", -1*(i-ntcfpoints-nzeros)*factor + avef, Ftcf[i]/2.0);// /(factor*ntcfpoints));
         }
     }
     for ( int i = 0; i < ntcfpoints+nzeros / 2 ; i++)       // "positive" FFT frequencies
     {
         if ( -1*i*factor + avef >= (double) omegaStart)
         {
-            fprintf(spec_lineshape, "%e %e\n", -1*i*factor + avef, Ftcf[i]);///(factor*ntcfpoints));
+            fprintf(spec_lineshape, "%e %e\n", -1*i*factor + avef, Ftcf[i]/2.0);// /(factor*ntcfpoints));
         }
     }
     fclose(spec_lineshape);
@@ -500,8 +500,7 @@ int main()
     free(tmpFtcf);
     free(tcf);
     free(F);
-    free(propeig);
-    free(proploc);
+    free(prop);
     free(pdtcf);
 
     cudaFree(x_d);
@@ -526,8 +525,9 @@ int main()
     magma_free(kappa_d);
     magma_free(ckappa_d);
     magma_free(F_d);
-    magma_free(propeig_d);
-    magma_free(proploc_d);
+    magma_free(Ftmp_d);
+    magma_free(prop_d);
+    magma_free(ctmpmat_d);
     magma_free(w_d);
     magma_free(tcf_d);
     magma_free(pdtcf_d);
@@ -555,16 +555,16 @@ void get_eproj_GPU( rvec *x, float boxl, int natoms, int natom_mol, int nchrom, 
     
     int n, m, i, j, istart, istride;
     int chrom;
-    float mox[DIM];                     // oxygen position on molecule m
-    float mx[DIM];                      // atom position on molecule m
-    float nhx[DIM];                     // hydrogen position on molecule n of the current chromophore
-    float nox[DIM];                     // oxygen position on molecule n
-    float nohx[DIM];                    // the unit vector pointing along the OH bond for the current chromophore
-    float dr[DIM];                      // the min image vector between two atoms
-    float r;                            // the distance between two atoms 
-    const float cutoff = 0.7831;        // the oh cutoff distance
-    const float bohr_nm = 18.8973;      // convert from bohr to nanometer
-    rvec efield;                        // the electric field vector
+    double mox[DIM];                     // oxygen position on molecule m
+    double mx[DIM];                      // atom position on molecule m
+    double nhx[DIM];                     // hydrogen position on molecule n of the current chromophore
+    double nox[DIM];                     // oxygen position on molecule n
+    double nohx[DIM];                    // the unit vector pointing along the OH bond for the current chromophore
+    double dr[DIM];                      // the min image vector between two atoms
+    double r;                            // the distance between two atoms 
+    const float cutoff = 0.7831;         // the oh cutoff distance
+    const float bohr_nm = 18.8973;       // convert from bohr to nanometer
+    double efield[DIM];                  // the electric field vector
 
     istart  =   blockIdx.x * blockDim.x + threadIdx.x;
     istride =   blockDim.x * gridDim.x;
@@ -612,6 +612,11 @@ void get_eproj_GPU( rvec *x, float boxl, int natoms, int natom_mol, int nchrom, 
         nohx[0] /= r;
         nohx[1] /= r;
         nohx[2] /= r;
+        // for testing with YICUN -- can change to ROH later...
+        //nohx[0] /= 0.09572;
+        //nohx[1] /= 0.09572;
+        //nohx[2] /= 0.09572;
+ 
         // ***          DONE WITH MOLECULE N                                *** //
 
 
@@ -670,7 +675,16 @@ void get_eproj_GPU( rvec *x, float boxl, int natoms, int natom_mol, int nchrom, 
         // project the efield along the OH bond to get the relevant value for the map
         eproj[chrom] = dot3( efield, nohx );
 
-        // test looks good, everything appears to be ok
+        // test looks good, everything appears to be ok -- a little different than YICUN, but i think it is numerical error
+        /*
+        if( chrom == 0 ){
+            printf("chrom %d En %g\n", chrom, eproj[chrom]);
+            printf("%g %g %g\n", efield[0], efield[1], efield[2]);
+            printf("%g %g %g\n", nohx[0], nohx[1], nohx[2]);
+        }
+        */
+
+
         // printf("chrom: %d, eproj %f \n", chrom, eproj[chrom]);
 
     } // end loop over reference chromophores
@@ -690,23 +704,23 @@ void get_kappa_GPU( rvec *x, float boxl, int natoms, int natom_mol, int nchrom, 
     
     int n, m, istart, istride;
     int chromn, chromm;
-    float mox[DIM];                         // oxygen position on molecule m
-    float mhx[DIM];                         // atom position on molecule m
-    float nhx[DIM];                         // hydrogen position on molecule n of the current chromophore
-    float nox[DIM];                         // oxygen position on molecule n
-    float noh[DIM];
-    float moh[DIM];
-    float nmu[DIM];
-    float mmu[DIM];
-    float mmuprime;
-    float nmuprime;
-    float dr[DIM];                          // the min image vector between two atoms
-    float r;                                // the distance between two atoms 
-    const float bohr_nm    = 18.8973;       // convert from bohr to nanometer
-    const float cm_hartree = 2.1947463E5;   // convert from cm-1 to hartree
-    float  En, Em;                           // the electric field projection
-    float  xn, xm, pn, pm;                   // the x and p from the map
-    float  wn, wm;                           // the energies
+    double mox[DIM];                         // oxygen position on molecule m
+    double mhx[DIM];                         // atom position on molecule m
+    double nhx[DIM];                         // hydrogen position on molecule n of the current chromophore
+    double nox[DIM];                         // oxygen position on molecule n
+    double noh[DIM];
+    double moh[DIM];
+    double nmu[DIM];
+    double mmu[DIM];
+    double mmuprime;
+    double nmuprime;
+    double dr[DIM];                          // the min image vector between two atoms
+    double r;                                // the distance between two atoms 
+    const double bohr_nm    = 18.8973;       // convert from bohr to nanometer
+    const double cm_hartree = 2.1947463E5;   // convert from cm-1 to hartree
+    double En, Em;                           // the electric field projection
+    double xn, xm, pn, pm;                   // the x and p from the map
+    double wn, wm;                           // the energies
 
     istart  =   blockIdx.x * blockDim.x + threadIdx.x;
     istride =   blockDim.x * gridDim.x;
@@ -761,10 +775,6 @@ void get_kappa_GPU( rvec *x, float boxl, int natoms, int natom_mol, int nchrom, 
         mux[chromn] = noh[0] * nmuprime * xn;
         muy[chromn] = noh[1] * nmuprime * xn;
         muz[chromn] = noh[2] * nmuprime * xn;
-        // test by setting x to one // BE SURE TO REMOVE
-        //mux[chromn] = 1.0;//*nmuprime*xn;
-        //muy[chromn] = 1.0;//*nmuprime*xn;
-        //muz[chromn] = 1.0;//*nmuprime*xn;;
 
 
 
@@ -906,19 +916,19 @@ void get_spectral_density( double *w, double *MUX, double *MUY, double *MUZ, dou
  **********************************************************/
 
 // The minimage image of a scalar
-float minImage( float dx, float boxl )
+double minImage( double dx, double boxl )
 {
     return dx - boxl*round(dx/boxl);
 }
 
 // The magnitude of a 3 dimensional vector
-float mag3( float dx[3] )
+double mag3( double dx[3] )
 {
     return sqrt( dot3( dx, dx ) );
 }
 
 // The dot product of a 3 dimensional vector
-float dot3( float x[3], float y[3] )
+double dot3( double x[3], double y[3] )
 {
     return  x[0]*y[0] + x[1]*y[1] + x[2]*y[2];
 }
@@ -937,5 +947,21 @@ void cast_to_complex_GPU ( double *d_d, magmaDoubleComplex *z_d, int n )
     for ( i = istart; i < n; i += istride )
     {
         z_d[i] = MAGMA_Z_MAKE( d_d[i], 0.0 ); 
+    }
+}
+
+__global__
+void copy_complex_GPU( magmaDoubleComplex *out_d, magmaDoubleComplex *in_d, int n )
+{
+    int istart, istride, i;
+    
+    // split up each desired frequency to separate thread on GPU
+    istart  =   blockIdx.x * blockDim.x + threadIdx.x;
+    istride =   blockDim.x * gridDim.x;
+
+    // convert from float to complex
+    for ( i = istart; i < n; i += istride )
+    {
+        out_d[i] = in_d[i];
     }
 }
