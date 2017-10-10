@@ -8,11 +8,12 @@
 #include <xdrfile/xdrfile.h>
 #include <xdrfile/xdrfile_xtc.h>
 #include "calcIR.h"
+#include <complex.h>
 
 #include "magma_v2.h"
 #include <cufft.h>
 
-#define HBAR 5.30887         // in cm-1 * ps
+#define HBAR 5.308837367       // in cm-1 * ps
 #define PI   3.14159265359
 
 
@@ -24,26 +25,28 @@ int main()
 
     // User input
     // TODO: make to get from user instead of hardcode
-    const char   *gmxf         = (const char *)"./n216/traj_comp.xtc"; // trajectory file
+    const char   *gmxf         = (const char *)"./n1/traj_comp.xtc"; // trajectory file
     const double dt            = 0.010;  // dt between frames in xtc file (in ps)
     const int    ntcfpoints    = 500 ;   // the number of tcf points for each spectrum
     const int    nsamples      = 1   ;   // number of samples to average for the total spectrum
-    const int    sampleEvery   = 20  ;   // sample a new configuration every sampleEvery ps. Note ntcfpoints*dt must be less than sampleEvery.
+    const int    sampleEvery   = 5   ;   // sample a new configuration every sampleEvery ps. Note ntcfpoints*dt must be less than sampleEvery.
 
-    const float t1            = 0.260;  // relaxation time ( in ps )
-    const float avef          = 3400.0; // the approximate average stretch frequency to get rid of high frequency oscillations in the time correlation function
+    const double t1            = 0.260;  // relaxation time ( in ps )
+    const double avef          = 3415.2; // the approximate average stretch frequency to get rid of high frequency oscillations in the time correlation function
     const int   omegaStart    = 2000;   // starting frequency for spectral density
     const int   omegaStop     = 5000;   // ending frequency for spectral density
     const int   omegaStep     = 5;      // resolution for spectral density
 
     const int   natom_mol     = 4;      // Atoms per water molecule  :: MODEL DEPENDENT
     const int   nchrom_mol    = 2;      // Chromophores per molecule :: TWO for stretch -- ONE for bend
+    
+    const int   nzeros        = 2*12800;  // zeros for padding fft
  
 
 
     // Some useful variables and constants
     int               natoms, nmol, frame, nchrom;
-    const int         ntcfpointsR = (ntcfpoints - 1)*2;                         // number of points for the real fourier transform
+    const int         ntcfpointsR = (nzeros + ntcfpoints - 1)*2;                         // number of points for the real fourier transform
     const int         nomega      = ( omegaStop - omegaStart ) / omegaStep + 1; // number of frequencies for the spectral density
     int               currentSample = 0;                                        // current sample
 
@@ -56,7 +59,8 @@ int main()
     // Some variables for the GPU
     rvec                *x_d;                       // positions
     double              *mux_d, *muy_d, *muz_d;     // transition dipole moments
-    magmaDoubleComplex   *cmux_d, *cmuy_d, *cmuz_d;  // complex versions of the transition dipole moment
+    magmaDoubleComplex  *cmux0_d, *cmuy0_d, *cmuz0_d;// complex version of the transition dipole moment at t=0 
+    magmaDoubleComplex  *cmux_d, *cmuy_d, *cmuz_d;  // complex versions of the transition dipole moment
     magmaDoubleComplex  *tmpmu_d;                   // to sum all polarizations
     double              *MUX_d, *MUY_d, *MUZ_d;     // transition dipole moments in the eigen basis
     double              *eproj_d;                   // the electric field projected along the oh bonds
@@ -84,10 +88,11 @@ int main()
     // variables for TCF
     magmaDoubleComplex *F, *F_d;             // F matrix on CPU and GPU
     magmaDoubleComplex *propeig, *propeig_d; // Propigator matrix on CPU and GPU
-    magmaDoubleComplex *proploc_d;
+    magmaDoubleComplex *proploc, *proploc_d;
     magmaDoubleComplex *ckappa_d;           // Propigator matrix in the local basis and a complex version of kappa
     magmaDoubleComplex tcfx, tcfy, tcfz;     // Time correlation function, polarized
     magmaDoubleComplex dcy, tcftmp;          // Decay constant and a temporary variable for the tcf
+    magmaDoubleComplex *pdtcf, *pdtcf_d;   // padded time correlation functions
     magmaDoubleComplex *tcf, *tcf_d;         // Time correlation function
     magmaDoubleComplex *tmptcf;              // A temporary function for time correlation function
     double             *Ftcf, *Ftcf_d;       // Fourier transformed time correlation function
@@ -148,6 +153,8 @@ int main()
     tcf     = (magmaDoubleComplex *) calloc( ntcfpoints   , sizeof(magmaDoubleComplex));
     F       = (magmaDoubleComplex *) calloc( nchrom*nchrom, sizeof(magmaDoubleComplex));
     propeig = (magmaDoubleComplex *) calloc( nchrom*nchrom, sizeof(magmaDoubleComplex));
+    proploc = (magmaDoubleComplex *) calloc( nchrom*nchrom, sizeof(magmaDoubleComplex));
+
     
     // allocate memory for arrays on the GPU
     cudaMalloc( &x_d     , natoms*sizeof(x[0]));
@@ -163,6 +170,9 @@ int main()
     cudaMalloc( &cmux_d  , nchrom*sizeof(magmaDoubleComplex));
     cudaMalloc( &cmuy_d  , nchrom*sizeof(magmaDoubleComplex));
     cudaMalloc( &cmuz_d  , nchrom*sizeof(magmaDoubleComplex));
+    cudaMalloc( &cmux0_d , nchrom*sizeof(magmaDoubleComplex));
+    cudaMalloc( &cmuy0_d , nchrom*sizeof(magmaDoubleComplex));
+    cudaMalloc( &cmuz0_d , nchrom*sizeof(magmaDoubleComplex));
     cudaMalloc( &tmpmu_d , nchrom*sizeof(magmaDoubleComplex));
 
     magma_dmalloc( &eproj_d     , nchrom );
@@ -308,19 +318,31 @@ int main()
                 // initialize the F matrix at t=0 to the unit matrix
                 for ( int i = 0; i < nchrom; i ++ )
                 {
-                    // NOTE: off diagonal elements were zeroed on allocation using calloc
+                    for ( int j = 0; j < nchrom; j ++ )
+                    {
+                        F[ i*nchrom + j] = MAGMA_Z_ZERO;
+                    }
                     F[ i*nchrom + i] = MAGMA_Z_ONE;
                 }
                 // copy the F matrix to device memory -- after initialization, won't need back in host memory
                 cudaMemcpy( F_d, F, nchrom*nchrom*sizeof(magmaDoubleComplex), cudaMemcpyHostToDevice );
+
+                // set the transition dipole moment at t=0
+                cast_to_complex_GPU <<<numBlocks,blockSize>>> ( mux_d  , cmux0_d  , nchrom        );
+                cast_to_complex_GPU <<<numBlocks,blockSize>>> ( muy_d  , cmuy0_d  , nchrom        );
+                cast_to_complex_GPU <<<numBlocks,blockSize>>> ( muz_d  , cmuz0_d  , nchrom        );
             }
             else
             {
                 // build the propigator
                 for ( int i = 0; i < nchrom; i++ )
                 {
-                    // note off diagonal elements were zeroed on allocation using calloc and they shouldnt change
-                    // but be careful here... P = exp(iwt/hbar)
+                    // zero matrix
+                    for ( int j = 0; j < nchrom; j ++ )
+                    {
+                        propeig[ i*nchrom + j] = MAGMA_Z_ZERO;
+                    }
+                    // P = exp(iwt/hbar)
                     arg   = ((w[i] - avef)* dt / HBAR);
                     propeig[ i*nchrom + i ] = MAGMA_Z_MAKE( cos(arg), sin(arg) );
                 }
@@ -344,25 +366,32 @@ int main()
                              (magma_int_t) nchrom, MAGMA_Z_ONE, proploc_d, ldkappa, F_d, ldkappa, 
                              MAGMA_Z_ZERO, F_d, ldkappa, queue );
             }
+            // Some test with YICUN's code... everything looks okay for n=1, minus some floating point precision due to using different libraries
+            //cudaMemcpy( proploc , proploc_d, nchrom*nchrom*sizeof(magmaDoubleComplex), cudaMemcpyDeviceToHost );
+            //printf("frame=%d prop[0]=%g prop[1]=%g prop[2]=%g prop[3]=%g\n", frame, MAGMA_Z_REAL(proploc[0]), MAGMA_Z_REAL(proploc[1]), MAGMA_Z_REAL(proploc[2]), MAGMA_Z_REAL(proploc[3]));
+
+            //cudaMemcpy( F , F_d, nchrom*nchrom*sizeof(magmaDoubleComplex), cudaMemcpyDeviceToHost );
+            //printf("frame=%d F[0]=%g F[1]=%g F[2]=%g F[3]=%g\n", frame, MAGMA_Z_REAL(F[0]), MAGMA_Z_REAL(F[1]), MAGMA_Z_REAL(F[2]), MAGMA_Z_REAL(F[3]));
+
 
 
             // now calculate mFm for x y and z components
             // F_d * cmux_d = tmpmu_d
             magma_zgemv( MagmaNoTrans, (magma_int_t) nchrom, (magma_int_t) nchrom, MAGMA_Z_ONE, F_d, ldkappa,
-                         cmux_d, 1, MAGMA_Z_ZERO, tmpmu_d, 1, queue);
-            // tcfx = cmux_d**T * tmpmu_d
+                         cmux0_d, 1, MAGMA_Z_ZERO, tmpmu_d, 1, queue);
+            // tcfx = cmux0_d**T * tmpmu_d
             tcfx = magma_zdotu( (magma_int_t) nchrom, cmux_d, 1, tmpmu_d, 1, queue );
 
             // F_d * cmuy_d = tmpmu_d
             magma_zgemv( MagmaNoTrans, (magma_int_t) nchrom, (magma_int_t) nchrom, MAGMA_Z_ONE, F_d, ldkappa,
-                         cmuy_d, 1, MAGMA_Z_ZERO, tmpmu_d, 1, queue);
-            // tcfy = cmuy_d**T * tmpmu_d
+                         cmuy0_d, 1, MAGMA_Z_ZERO, tmpmu_d, 1, queue);
+            // tcfy = cmuy0_d**T * tmpmu_d
             tcfy = magma_zdotu( (magma_int_t) nchrom, cmuy_d, 1, tmpmu_d, 1, queue );
 
             // F_d * cmuz_d = tmpmu_d
             magma_zgemv( MagmaNoTrans, (magma_int_t) nchrom, (magma_int_t) nchrom, MAGMA_Z_ONE, F_d, ldkappa,
-                         cmuz_d, 1, MAGMA_Z_ZERO, tmpmu_d, 1, queue);
-            // tcfz = cmuz_d**T * tmpmu_d
+                         cmuz0_d, 1, MAGMA_Z_ZERO, tmpmu_d, 1, queue);
+            // tcfz = cmuz0_d**T * tmpmu_d
             tcfz = magma_zdotu( (magma_int_t) nchrom, cmuz_d, 1, tmpmu_d, 1, queue );
 
 
@@ -371,7 +400,7 @@ int main()
             tcftmp                = MAGMA_Z_ADD( tcfx  , tcfy );
             tcftmp                = MAGMA_Z_ADD( tcftmp, tcfz );
             dcy                   = MAGMA_Z_MAKE(exp( -1.0 * frame * dt / ( 2.0 * t1 )), 0);
-            printf("dcy: %e rtcftmp: %e itcftmp: %e\n", MAGMA_Z_REAL(dcy), MAGMA_Z_REAL(tcftmp), MAGMA_Z_IMAG(tcftmp));
+            //printf("dcy: %e rtcftmp: %e itcftmp: %e\n", MAGMA_Z_REAL(dcy), MAGMA_Z_REAL(tcftmp), MAGMA_Z_IMAG(tcftmp));
             tmptcf[frame]         = MAGMA_Z_MUL( tcftmp, dcy );
 
             // ***        Done with Time Correlation            *** //
@@ -381,6 +410,8 @@ int main()
         for ( int i = 0; i < ntcfpoints; i ++ )
         {
             tcf[i]  = MAGMA_Z_ADD( tcf[i] , tmptcf[i]);
+            // To compare with yicun
+            tcf[i]  = MAGMA_Z_DIV( tcf[i] , MAGMA_Z_MAKE(2.0,0.0));
         }
 
         // done with current sample, move to next
@@ -388,13 +419,24 @@ int main()
         }
     } // end outer loop
 
+
+    // pad the time correlation function with zeros, copy to device memory and perform fft
     // fourier transform the time correlation function on the GPU
-    cufftPlan1d( &plan, ntcfpoints, CUFFT_Z2D, 1);
-    cudaMemcpy( tcf_d, tcf, ntcfpoints*sizeof(magmaDoubleComplex), cudaMemcpyHostToDevice );
-    cufftExecZ2D( plan, tcf_d, Ftcf_d );
+    pdtcf = (magmaDoubleComplex *) calloc( ntcfpoints+nzeros, sizeof(magmaDoubleComplex));
+    for ( int i = 0; i < ntcfpoints; i++ )
+    {
+        pdtcf[i] = tcf[i];
+    }
+    for ( int i = 0; i < nzeros; i++ )
+    {
+        pdtcf[i+ntcfpoints] = MAGMA_Z_ZERO;
+    }
+    magma_zmalloc( &pdtcf_d    , ntcfpoints+nzeros);
+    cudaMemcpy( pdtcf_d, pdtcf, (ntcfpoints+nzeros)*sizeof(magmaDoubleComplex), cudaMemcpyHostToDevice );
+    cufftPlan1d( &plan, ntcfpoints+nzeros, CUFFT_Z2D, 1);
+    cufftExecZ2D( plan, pdtcf_d, Ftcf_d );
     cudaMemcpy( Ftcf, Ftcf_d, ntcfpointsR*sizeof(double), cudaMemcpyDeviceToHost );
     cufftDestroy(plan);
-
 
     // normalize spectra by number of samples
     for ( int i = 0; i < ntcfpoints; i++ )
@@ -413,8 +455,8 @@ int main()
     FILE *itcf = fopen("tcf_imag.dat", "w");
     for ( int i = 0; i < ntcfpoints; i++ )
     {
-        fprintf( rtcf, "%e %e \n", time[i], MAGMA_Z_REAL( tcf[i] ) );
-        fprintf( itcf, "%e %e \n", time[i], MAGMA_Z_IMAG( tcf[i] ) );
+        fprintf( rtcf, "%g %g \n", time[i], MAGMA_Z_REAL( tcf[i] ) );
+        fprintf( itcf, "%g %g \n", time[i], MAGMA_Z_IMAG( tcf[i] ) );
     }
     fclose( rtcf );
     fclose( itcf );
@@ -429,19 +471,19 @@ int main()
 
     // Write the absorption lineshape... Since the C2R transform is inverse by default, the frequencies have to be negated
     FILE *spec_lineshape = fopen("spectral_lineshape.dat", "w");
-    double factor  = 2*PI*HBAR/(dt*ntcfpoints);  // conversion factor to give energy and correct intensity from FFT
-    for ( int i = ntcfpoints/2; i < ntcfpoints; i++ ) // "negative" FFT frequencies
+    double factor  = 2*PI*HBAR/(dt*(ntcfpoints+nzeros));  // conversion factor to give energy and correct intensity from FFT
+    for ( int i = (ntcfpoints+nzeros)/2; i < ntcfpoints+nzeros; i++ ) // "negative" FFT frequencies
     {
-        if ( -1*(i-ntcfpoints)*factor + avef <= (double) omegaStop  )
+        if ( -1*(i-ntcfpoints-nzeros)*factor + avef <= (double) omegaStop  )
         {
-            fprintf(spec_lineshape, "%e %e\n", -1*(i-ntcfpoints)*factor + avef, Ftcf[i]/(factor*ntcfpoints));
+            fprintf(spec_lineshape, "%e %e\n", -1*(i-ntcfpoints-nzeros)*factor + avef, Ftcf[i]);///(factor*ntcfpoints));
         }
     }
-    for ( int i = 0; i < ntcfpoints / 2 ; i++)       // "positive" FFT frequencies
+    for ( int i = 0; i < ntcfpoints+nzeros / 2 ; i++)       // "positive" FFT frequencies
     {
         if ( -1*i*factor + avef >= (double) omegaStart)
         {
-            fprintf(spec_lineshape, "%e %e\n", -1*i*factor + avef, Ftcf[i]/(factor*ntcfpoints));
+            fprintf(spec_lineshape, "%e %e\n", -1*i*factor + avef, Ftcf[i]);///(factor*ntcfpoints));
         }
     }
     fclose(spec_lineshape);
@@ -459,6 +501,8 @@ int main()
     free(tcf);
     free(F);
     free(propeig);
+    free(proploc);
+    free(pdtcf);
 
     cudaFree(x_d);
     cudaFree(mux_d); 
@@ -473,6 +517,9 @@ int main()
     cudaFree(cmux_d); 
     cudaFree(cmuy_d);
     cudaFree(cmuz_d);
+    cudaFree(cmux0_d); 
+    cudaFree(cmuy0_d);
+    cudaFree(cmuz0_d);
     cudaFree(tmpmu_d);
  
     magma_free(eproj_d);
@@ -483,6 +530,7 @@ int main()
     magma_free(proploc_d);
     magma_free(w_d);
     magma_free(tcf_d);
+    magma_free(pdtcf_d);
 
     magma_free_cpu(w);
     magma_free_cpu(iwork);
@@ -877,7 +925,7 @@ float dot3( float x[3], float y[3] )
 
 // cast the matrix from float to complex -- this may not be the best way to do this, but it is quick to implement
 __global__
-void cast_to_complex_GPU ( double *s_d, magmaDoubleComplex *c_d, int n )
+void cast_to_complex_GPU ( double *d_d, magmaDoubleComplex *z_d, int n )
 {
     int istart, istride, i;
     
@@ -888,6 +936,6 @@ void cast_to_complex_GPU ( double *s_d, magmaDoubleComplex *c_d, int n )
     // convert from float to complex
     for ( i = istart; i < n; i += istride )
     {
-        c_d[i] = MAGMA_Z_MAKE( s_d[i], 0.0 ); 
+        z_d[i] = MAGMA_Z_MAKE( d_d[i], 0.0 ); 
     }
 }
