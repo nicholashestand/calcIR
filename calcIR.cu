@@ -25,8 +25,8 @@ int main()
     // User input
     // TODO: make to get from user instead of hardcode
     const char   *gmxf         = (const char *)"./n216/traj_comp.xtc"; // trajectory file
-    const double dt            = 0.002;  // dt between frames in xtc file (in ps)
-    const int    ntcfpoints    = 5000;  // the number of tcf points for each spectrum
+    const double dt            = 0.010;  // dt between frames in xtc file (in ps)
+    const int    ntcfpoints    = 500 ;   // the number of tcf points for each spectrum
     const int    nsamples      = 1   ;   // number of samples to average for the total spectrum
     const int    sampleEvery   = 20  ;   // sample a new configuration every sampleEvery ps. Note ntcfpoints*dt must be less than sampleEvery.
 
@@ -737,8 +737,8 @@ void get_kappa_GPU( rvec *x, float boxl, int natoms, int natom_mol, int nchrom, 
             // the diagonal energy
             if ( chromn == chromm )
             {
-                kappa[chromn*nchrom + chromm]   =   3500.0;
-                continue;
+                //kappa[chromn*nchrom + chromm]   =   3500.0;
+                //continue;
                 // Note that this is a flattened 2d array
                 kappa[chromn*nchrom + chromm]   =   wm; 
             }
@@ -746,8 +746,8 @@ void get_kappa_GPU( rvec *x, float boxl, int natoms, int natom_mol, int nchrom, 
             // intramolecular coupling
             else if ( m == n )
             {
-                kappa[chromn*nchrom + chromm]   =   0.0;
-                continue;
+                //kappa[chromn*nchrom + chromm]   =   0.0;
+                //continue;
                 kappa[chromn*nchrom + chromm]   =  (-1361.0 + 27165*(En + Em))*xn*xm - 1.887*pn*pm;
             }
 
@@ -755,8 +755,8 @@ void get_kappa_GPU( rvec *x, float boxl, int natoms, int natom_mol, int nchrom, 
             else
             {
                 
-                kappa[chromn*nchrom + chromm]   =   0.0;
-                continue;
+                //kappa[chromn*nchrom + chromm]   =   0.0;
+                //continue;
                 
                 // calculate the distance between dipoles
                 // they are located 0.67 A from the oxygen along the OH bond
