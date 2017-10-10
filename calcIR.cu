@@ -25,6 +25,7 @@ int main()
 
     // User input
     // TODO: make to get from user instead of hardcode
+    // TODO: what needs to be in double?? If we can get away with single do it bc it is much faster on the GPU
     const char   *gmxf         = (const char *)"./n216/traj_comp.xtc"; // trajectory file
     const double dt            = 0.010;  // dt between frames in xtc file (in ps)
     const int    ntcfpoints    = 500 ;   // the number of tcf points for each spectrum
@@ -470,20 +471,21 @@ int main()
     fclose(spec_density);
 
     // Write the absorption lineshape... Since the C2R transform is inverse by default, the frequencies have to be negated
+    // note if you need to compare with YICUN, divide Ftcf by 2
     FILE *spec_lineshape = fopen("spectral_lineshape.dat", "w");
     double factor  = 2*PI*HBAR/(dt*(ntcfpoints+nzeros));  // conversion factor to give energy and correct intensity from FFT
     for ( int i = (ntcfpoints+nzeros)/2; i < ntcfpoints+nzeros; i++ ) // "negative" FFT frequencies
     {
         if ( -1*(i-ntcfpoints-nzeros)*factor + avef <= (double) omegaStop  )
         {
-            fprintf(spec_lineshape, "%e %e\n", -1*(i-ntcfpoints-nzeros)*factor + avef, Ftcf[i]/2.0);// /(factor*ntcfpoints));
+            fprintf(spec_lineshape, "%e %e\n", -1*(i-ntcfpoints-nzeros)*factor + avef, Ftcf[i]/(factor*(ntcfpoints+nzeros)));
         }
     }
     for ( int i = 0; i < ntcfpoints+nzeros / 2 ; i++)       // "positive" FFT frequencies
     {
         if ( -1*i*factor + avef >= (double) omegaStart)
         {
-            fprintf(spec_lineshape, "%e %e\n", -1*i*factor + avef, Ftcf[i]/2.0);// /(factor*ntcfpoints));
+            fprintf(spec_lineshape, "%e %e\n", -1*i*factor + avef, Ftcf[i]/(factor*(ntcfpoints+nzeros)));
         }
     }
     fclose(spec_lineshape);
