@@ -1,22 +1,24 @@
-
-# vars copied from make.inc...I really don't know what I'm doing here
-FPIC = -fPIC
-
-NVCCFLAGS = -O3	-DNDEBUG -DADD_ -Xcompiler "$(FPIC) -Wall -Wno-unused-function" -DMKL_ILP64
-LIB = -lmkl_gf_ilp64 -lmkl_gnu_thread -lmkl_core -lpthread -lcublas -lcusparse -lcudart -lcudadevrt -lcufft
-LIB += -lxdrfile
-LIB += -lmagma
-MKLROOT = /opt/intel/mkl
-CUDADIR = /usr/local/cuda
-MAGMADIR= /usr/local/magma
-LIBDIR  = -L$(CUDADIR)/lib64 \
-	  -L$(MKLROOT)/lib/intel64 \
-	  -L$(MAGMADIR)/lib
-
-INC     = -I$(CUDADIR)/include \
-	  -I$(MKLROOT)/include \
-	  -I$(MAGMADIR)/include
+src     = calcIR.cu
+exes    = calcIR.exe
+exed    = calcIR_d.exe
+NVCC    = nvcc
+INC     = -I$(CUDADIR)/include -I$(MKLROOT)/include -I$(MAGMADIR)/include
+FLAGS	= -Xcompiler "-fPIC -Wall -Wno-unused-function" -DMKL_ILP64
+LIBS    = -lmkl_gf_ilp64 -lmkl_gnu_thread -lmkl_core -lgomp -lpthread -lm -ldl -lcufft -lmagma -lxdrfile
+LIBDIRS = -L/opt/intel/mkl/lib/intel64 -L/user/local/cuda/lib64 -L/usr/local/magma/lib
+INCDIRS = -I/opt/intel/mkl/include -I/user/local/cuda/include -I/user/local/magma/include
 
 
-all:
-	nvcc calcIR.cu -o calcIR.exe $(LIB) $(LIBDIR) $(INC) $(NVCCFLAGS)
+all: single double
+
+.PHONY: single
+single:
+	$(NVCC) $(src) -o $(exes) $(FLAGS) $(LIBDIRS) $(LIBS) $(INCDIRS)
+
+.PHONY: double
+double: 
+	$(NVCC) $(src) -o $(exed) $(FLAGS) $(LIBDIRS) $(LIBS) $(INCDIRS) -DUSE_DOUBLES=1
+
+clean:
+	rm calcIR.exe
+	rm calcIR_d.exe
