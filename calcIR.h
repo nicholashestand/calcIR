@@ -4,31 +4,72 @@
 #include <xdrfile/xdrfile.h>
 #include "magma_v2.h"
 
-__global__
-void get_eproj_GPU( rvec *x, float boxl, int natoms, int natom_mol, int nchrom, int nchrom_mol, int nmol, double *eproj);
+#ifdef USE_DOUBLES
+
+typedef double user_real_t;
+typedef magmaDoubleComplex user_complex_t;
+
+#define MAGMA_ONE  MAGMA_Z_ONE
+#define MAGMA_ZERO MAGMA_Z_ZERO
+#define MAGMA_MAKE MAGMA_Z_MAKE
+#define MAGMA_ADD  MAGMA_Z_ADD
+#define MAGMA_MUL  MAGMA_Z_MUL
+#define MAGMA_DIV  MAGMA_Z_DIV
+#define MAGMA_REAL MAGMA_Z_REAL
+#define MAGMA_IMAG MAGMA_Z_IMAG
+
+#else
+
+typedef float user_real_t;
+typedef magmaFloatComplex user_complex_t;
+
+#define MAGMA_ONE  MAGMA_C_ONE
+#define MAGMA_ZERO MAGMA_C_ZERO
+#define MAGMA_MAKE MAGMA_C_MAKE
+#define MAGMA_ADD  MAGMA_C_ADD
+#define MAGMA_MUL  MAGMA_C_MUL
+#define MAGMA_DIV  MAGMA_C_DIV
+#define MAGMA_REAL MAGMA_C_REAL
+#define MAGMA_IMAG MAGMA_C_IMAG
+
+#endif
+
+#define HBAR 5.308837367       // in cm-1 * ps
+#define PI   3.14159265359
+
+// FUNCTIONS
 
 __global__
-void get_kappa_GPU( rvec *x, float boxl, int natoms, int natom_mol, int nchrom, int nchrom_mol, int nmol, double *eproj, 
-                    double *kappa, double *mux, double *muy, double *muz);
+void get_eproj_GPU( rvec *x, float boxl, int natoms, int natom_mol, int nchrom, int nchrom_mol, int nmol, user_real_t *eproj);
+
 
 __global__
-void get_spectral_density( double *w, double *MUX, double *MUY, double *MUZ, double *omega, double *Sw, 
-                           int nomega, int nchrom, double t1 );
+void get_kappa_GPU( rvec *x, float boxl, int natoms, int natom_mol, int nchrom, int nchrom_mol, int nmol, user_real_t *eproj,
+                    user_real_t *kappa, user_real_t *mux, user_real_t *muy, user_real_t *muz);
+
 
 __global__
-void cast_to_complex_GPU( double *s_d, magmaDoubleComplex *c_d, int n );
-//TODO:: change int to magma_int_t in cast and copy functions
+void get_spectral_density( user_real_t *w, user_real_t *MUX, user_real_t *MUY, user_real_t *MUZ, user_real_t *omega, user_real_t *Sw,
+                           int nomega, int nchrom, user_real_t t1 );
+
 
 __global__
-void copy_complex_GPU( magmaDoubleComplex *out_d, magmaDoubleComplex *in_d, int n );
+void cast_to_complex_GPU( user_real_t *s_d, user_complex_t *c_d, magma_int_t n );
+
+
+__global__
+void copy_complex_GPU( user_complex_t *out_d, user_complex_t *in_d, magma_int_t n );
+
 
 __host__ __device__
-double minImage( double dx, double boxl );
+user_real_t minImage( user_real_t dx, user_real_t boxl );
+
 
 __host__ __device__
-double mag3( double dx[3] );
+user_real_t mag3( user_real_t dx[3] );
+
 
 __host__ __device__
-double dot3( double x[3], double y[3] );
+user_real_t dot3( user_real_t x[3], user_real_t y[3] );
 
 #endif
