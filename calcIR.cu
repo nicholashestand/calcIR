@@ -25,8 +25,8 @@ int main(int argc, char *argv[])
     const char          *gmxf         = argv[1];                                // trajectory file
     const char          *outf         = argv[2];
     const user_real_t   dt            = 0.010;                                  // dt between frames in xtc file (in ps)
-    const int           ntcfpoints    = 100 ;                                   // the number of tcf points for each spectrum
-    const int           nsamples      = 1   ;                                   // number of samples to average for the total spectrum
+    const int           ntcfpoints    = 200 ;                                   // the number of tcf points for each spectrum
+    const int           nsamples      = 20  ;                                   // number of samples to average for the total spectrum
     const int           sampleEvery   = 5   ;                                   // sample a new configuration every sampleEvery ps. Note ntcfpoints*dt must be less than sampleEvery.
 
     const user_real_t   t1            = 0.260;                                  // relaxation time ( in ps )
@@ -511,7 +511,7 @@ int main(int argc, char *argv[])
     pdtcf = (user_complex_t *) calloc( ntcfpoints+nzeros, sizeof(user_complex_t));
     for ( int i = 0; i < ntcfpoints; i++ )
     {
-        pdtcf[i] = tcf[i];
+        pdtcf[i] = MAGMA_DIV(tcf[i], MAGMA_MAKE( nsamples, 0.0 ));
     }
     for ( int i = 0; i < nzeros; i++ )
     {
@@ -534,10 +534,9 @@ int main(int argc, char *argv[])
 
 
     // normalize spectra by number of samples
-    for ( int i = 0; i < ntcfpoints; i++ )
+    for ( int i = 0; i < ntcfpointsR; i++ )
     {
-        Ftcf[i] = Ftcf[i] / (user_real_t) nsamples; 
-        tcf[i]  = MAGMA_DIV( tcf[i] , MAGMA_MAKE( nsamples, 0.0 ));
+        Ftcf[i] = Ftcf[i] ;/// (user_real_t) nsamples; 
     }
     for ( int i = 0; i < nomega; i++)
     {
@@ -563,7 +562,7 @@ int main(int argc, char *argv[])
     FILE *spec_density = fopen(strcat(strcpy(fname,outf),"spdn.dat"), "w");
     for ( int i = 0; i < nomega; i++)
     {
-        fprintf(spec_density, "%e %e\n", omega[i], Sw[i]);
+        fprintf(spec_density, "%g %g\n", omega[i], Sw[i]);
     }
     fclose(spec_density);
 
@@ -575,14 +574,14 @@ int main(int argc, char *argv[])
     {
         if ( -1*(i-ntcfpoints-nzeros)*factor + avef <= (user_real_t) omegaStop  )
         {
-            fprintf(spec_lineshape, "%e %e\n", -1*(i-ntcfpoints-nzeros)*factor + avef, Ftcf[i]/(factor*(ntcfpoints+nzeros)));
+            fprintf(spec_lineshape, "%g %g\n", -1*(i-ntcfpoints-nzeros)*factor + avef, Ftcf[i]/(factor*(ntcfpoints+nzeros)));
         }
     }
     for ( int i = 0; i < ntcfpoints+nzeros / 2 ; i++)                   // "positive" FFT frequencies
     {
         if ( -1*i*factor + avef >= (user_real_t) omegaStart)
         {
-            fprintf(spec_lineshape, "%e %e\n", -1*i*factor + avef, Ftcf[i]/(factor*(ntcfpoints+nzeros)));
+            fprintf(spec_lineshape, "%g %g\n", -1*i*factor + avef, Ftcf[i]/(factor*(ntcfpoints+nzeros)));
         }
     }
     fclose(spec_lineshape);
