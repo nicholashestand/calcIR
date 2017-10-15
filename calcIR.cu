@@ -27,6 +27,9 @@ int main(int argc, char *argv[])
     strncpy( gmxf, "n216/traj_comp.xtc", MAX_STR_LEN );                   // trajectory file
     char          outf[MAX_STR_LEN]; 
     strncpy( outf, " ", MAX_STR_LEN );                                    // name for output files
+    char          model[MAX_STR_LEN];
+    strncpy( model, "tip4p", MAX_STR_LEN );
+    int           imodel        = 0;
     user_real_t   dt            = 0.010;                                  // dt between frames in xtc file (in ps)
     int           ntcfpoints    = 150 ;                                   // the number of tcf points for each spectrum
     int           nsamples      = 1   ;                                   // number of samples to average for the total spectrum
@@ -43,8 +46,8 @@ int main(int argc, char *argv[])
     int           nzeros        = 25600;                                  // zeros for padding fft
  
     // get user input parameters
-    ir_init( argv, gmxf, outf, &dt, &ntcfpoints, &nsamples, &sampleEvery, &t1, &avef, &omegaStart, 
-             &omegaStop, &omegaStep, &natom_mol, &nchrom_mol, &nzeros );
+    ir_init( argv, gmxf, outf, model, &dt, &ntcfpoints, &nsamples, &sampleEvery, &t1, 
+             &avef, &omegaStart, &omegaStop, &omegaStep, &natom_mol, &nchrom_mol, &nzeros );
 
     // Some useful variables and constants
     int                 natoms, nmol, frame, nchrom;
@@ -52,6 +55,16 @@ int main(int argc, char *argv[])
     const int           ntcfpointsR     = (nzeros + ntcfpoints - 1)*2;                  // number of points for the real fourier transform
     const int           nomega          = ( omegaStop - omegaStart ) / omegaStep + 1;   // number of frequencies for the spectral density
     int                 currentSample   = 0;                                            // current sample
+
+    // set model to integer to pass to gpu kernel to test in if statement for remaking OM bond lengths
+    if ( strcmp( model, "tip4p2005" ) == 0 || strcmp( model, "e3b3" ) == 0 )
+    {
+        imodel = 1;
+    }
+    else
+    {
+        imodel = 0;
+    }
 
     // Trajectory stuff for the CPU
     rvec                *x;                                                             // Position vector
@@ -214,7 +227,7 @@ int main(int argc, char *argv[])
     // **************************************************** //
     // ***          OUTER LOOP OVER SAMPLES             *** //
 
-    printf("\n>>> Now calculate the absorption spectrum \n\n");
+    printf("\n>>> Now calculate the absorption spectrum\n");
     printf("----------------------------------------------------------\n");
 
 
@@ -229,7 +242,7 @@ int main(int argc, char *argv[])
         }
         if ( currentSample * sampleEvery == (int) gmxtime )
         {
-            printf("\n\tNow processing sample %d starting at %.2f ps\n", currentSample, gmxtime );
+            printf("\n    Now processing sample %d/%d starting at %.2f ps\n", currentSample + 1, nsamples, gmxtime );
 
 
         // **************************************************** //
@@ -250,7 +263,7 @@ int main(int argc, char *argv[])
             boxl = box[0][0];
 
             // launch kernel to calculate the electric field projection along OH bonds and build the exciton hamiltonian
-            get_eproj_GPU <<<numBlocks,blockSize>>> ( x_d, boxl, natoms, natom_mol, nchrom, nchrom_mol, nmol, eproj_d );
+            get_eproj_GPU <<<numBlocks,blockSize>>> ( x_d, boxl, natoms, natom_mol, nchrom, nchrom_mol, nmol, imodel, eproj_d );
 
             get_kappa_GPU <<<numBlocks,blockSize>>> ( x_d, boxl, natoms, natom_mol, nchrom, nchrom_mol, nmol, eproj_d, 
                                                       kappa_d, mux_d, muy_d, muz_d );
@@ -490,8 +503,7 @@ int main(int argc, char *argv[])
             // ---------------------------------------------------- //
 
             // update progress bar
-            printProgress( frame, ntcfpoints );
-
+            printProgress( frame, ntcfpoints-1 );
 
         }
 
@@ -581,14 +593,14 @@ int main(int argc, char *argv[])
     {
         if ( -1*(i-ntcfpoints-nzeros)*factor + avef <= (user_real_t) omegaStop  )
         {
-            fprintf(spec_lineshape, "%g %g\n", -1*(i-ntcfpoints-nzeros)*factor + avef, Ftcf[i]/2.0);//(factor*(ntcfpoints+nzeros)));// TO COMPARE WITH YICUN
+            fprintf(spec_lineshape, "%g %g\n", -1*(i-ntcfpoints-nzeros)*factor + avef, Ftcf[i]/(factor*(ntcfpoints+nzeros)));// TO COMPARE WITH YICUN
         }
     }
     for ( int i = 0; i < ntcfpoints+nzeros / 2 ; i++)                   // "positive" FFT frequencies
     {
         if ( -1*i*factor + avef >= (user_real_t) omegaStart)
         {
-            fprintf(spec_lineshape, "%g %g\n", -1*i*factor + avef, Ftcf[i]/2.0);///(factor*(ntcfpoints+nzeros)));// TO COMPARE WITH YICUN
+            fprintf(spec_lineshape, "%g %g\n", -1*i*factor + avef, Ftcf[i]/(factor*(ntcfpoints+nzeros)));// TO COMPARE WITH YICUN
         }
     }
     fclose(spec_lineshape);
@@ -657,7 +669,7 @@ int main(int argc, char *argv[])
 
  **********************************************************/
 __global__
-void get_eproj_GPU( rvec *x, float boxl, int natoms, int natom_mol, int nchrom, int nchrom_mol, int nmol, user_real_t  *eproj )
+void get_eproj_GPU( rvec *x, float boxl, int natoms, int natom_mol, int nchrom, int nchrom_mol, int nmol, int model, user_real_t  *eproj )
 {
     
     int n, m, i, j, istart, istride;
@@ -667,6 +679,7 @@ void get_eproj_GPU( rvec *x, float boxl, int natoms, int natom_mol, int nchrom, 
     user_real_t nhx[DIM];                     // hydrogen position on molecule n of the current chromophore
     user_real_t nox[DIM];                     // oxygen position on molecule n
     user_real_t nohx[DIM];                    // the unit vector pointing along the OH bond for the current chromophore
+    user_real_t mom[DIM];                     // the OM vector on molecule m
     user_real_t dr[DIM];                      // the min image vector between two atoms
     user_real_t r;                            // the distance between two atoms 
     const float cutoff = 0.7831;         // the oh cutoff distance
@@ -719,6 +732,7 @@ void get_eproj_GPU( rvec *x, float boxl, int natoms, int natom_mol, int nchrom, 
         nohx[0] /= r;
         nohx[1] /= r;
         nohx[2] /= r;
+
         // for testing with YICUN -- can change to ROH later...
         //nohx[0] /= 0.09572;
         //nohx[1] /= 0.09572;
@@ -757,6 +771,24 @@ void get_eproj_GPU( rvec *x, float boxl, int natoms, int natom_mol, int nchrom, 
                 mx[1] = x[ m*natom_mol + i ][1];
                 mx[2] = x[ m*natom_mol + i ][2];
 
+                // Move m site to TIP4P distance if model is E3B3 or TIP4P2005 -- this must be done to use the TIP4P map
+                if ( i == 3 )
+                {
+                    if ( model != 0 ) 
+                    {
+                        // get the OM unit vector
+                        mom[0] = minImage( mx[0] - mox[0], boxl);
+                        mom[1] = minImage( mx[1] - mox[1], boxl);
+                        mom[2] = minImage( mx[2] - mox[2], boxl);
+                        r      = mag3(mom);
+
+                        // TIP4P OM distance is 0.015 nm along the OM bond
+                        mx[0] = mox[0] + 0.0150*mom[0]/r;
+                        mx[1] = mox[1] + 0.0150*mom[1]/r;
+                        mx[2] = mox[2] + 0.0150*mom[2]/r;
+                    }
+                }
+
                 // the minimum image displacement between the reference hydrogen and the current atom
                 // NOTE: this converted to bohr so the efield will be in au
                 dr[0]  = minImage( nhx[0] - mx[0], boxl )*bohr_nm;
@@ -781,18 +813,6 @@ void get_eproj_GPU( rvec *x, float boxl, int natoms, int natom_mol, int nchrom, 
 
         // project the efield along the OH bond to get the relevant value for the map
         eproj[chrom] = dot3( efield, nohx );
-
-        // test looks good, everything appears to be ok -- a little different than YICUN, but i think it is numerical error
-        /*
-        if( chrom == 0 ){
-            printf("chrom %d En %g\n", chrom, eproj[chrom]);
-            printf("%g %g %g\n", efield[0], efield[1], efield[2]);
-            printf("%g %g %g\n", nohx[0], nohx[1], nohx[2]);
-        }
-        */
-
-
-        //printf("chrom: %d, eproj %f \n", chrom, eproj[chrom]);
 
     } // end loop over reference chromophores
 }
@@ -1086,7 +1106,7 @@ void copy_complex_GPU( user_complex_t *out_d, user_complex_t *in_d, magma_int_t 
 
 
 // parse input file to setup calculation
-void ir_init( char *argv[], char gmxf[], char outf[], user_real_t *dt, int *ntcfpoints, int *nsamples, int *sampleEvery,
+void ir_init( char *argv[], char gmxf[], char outf[], char model[], user_real_t *dt, int *ntcfpoints, int *nsamples, int *sampleEvery,
               user_real_t *t1, user_real_t *avef, int *omegaStart, int *omegaStop, int *omegaStep, int *natom_mol, 
               int *nchrom_mol, int *nzeros )
 {
@@ -1125,6 +1145,15 @@ void ir_init( char *argv[], char gmxf[], char outf[], user_real_t *dt, int *ntcf
         {
             sscanf( value, "%s", outf );
             printf("\tSetting default file name to %s\n", outf);
+        }
+        else if ( strcmp(para,"model") == 0 )
+        {
+            sscanf( value, "%s", model );
+            printf("\tSetting model to %s\n", model );
+            if ( strcmp( model, "tip4p2005") == 0 || strcmp( model, "e3b3") == 0 )
+            {
+                printf("\tThe OM distance will be adjusted to that of TIP4P for the efield calculation\n");
+            }
         }
         else if ( strcmp(para,"dt") == 0 )
         {

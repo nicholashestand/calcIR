@@ -43,7 +43,7 @@ typedef magmaFloatComplex user_complex_t;
 // FUNCTIONS
 
 __global__
-void get_eproj_GPU( rvec *x, float boxl, int natoms, int natom_mol, int nchrom, int nchrom_mol, int nmol, user_real_t *eproj);
+void get_eproj_GPU( rvec *x, float boxl, int natoms, int natom_mol, int nchrom, int nchrom_mol, int nmol, int model, user_real_t *eproj);
 
 
 __global__
@@ -76,7 +76,7 @@ __host__ __device__
 user_real_t dot3( user_real_t x[3], user_real_t y[3] );
 
 
-void ir_init( char *argv[], char gmxf[], char outf[], user_real_t *dt, int *ntcfpoints, int *nsamples, int *sampleEvery,
+void ir_init( char *argv[], char gmxf[], char outf[], char model[], user_real_t *dt, int *ntcfpoints, int *nsamples, int *sampleEvery,
               user_real_t *t1, user_real_t *avef, int *omegaStart, int *omegaStop, int *omegaStep, int *natom_mol, 
               int *nchrom_mol, int *nzeros );
 
