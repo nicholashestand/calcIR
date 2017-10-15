@@ -36,6 +36,9 @@ typedef magmaFloatComplex user_complex_t;
 
 #define HBAR 5.308837367       // in cm-1 * ps
 #define PI   3.14159265359
+#define MAX_STR_LEN 80
+#define PSTR "||||||||||||||||||||||||||||||||||||||||||||||||||"
+#define PWID 50
 
 // FUNCTIONS
 
@@ -71,5 +74,14 @@ user_real_t mag3( user_real_t dx[3] );
 
 __host__ __device__
 user_real_t dot3( user_real_t x[3], user_real_t y[3] );
+
+
+void ir_init( char *argv[], char gmxf[], char outf[], user_real_t *dt, int *ntcfpoints, int *nsamples, int *sampleEvery,
+              user_real_t *t1, user_real_t *avef, int *omegaStart, int *omegaStop, int *omegaStep, int *natom_mol, 
+              int *nchrom_mol, int *nzeros );
+
+
+void printProgress( int currentStep, int totalSteps );
+
 
 #endif

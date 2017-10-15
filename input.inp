@@ -1,0 +1,14 @@
+xdrf            n216/traj_comp.xtc          // the xtc file
+outf            test                        // the name to prepend to the output files
+dt              0.010                       // time between tcf points in ps
+ntcfpoints      150                         // number of tcf points for each spectrum
+nsamples        20                          // the number of spectra to average
+sampleEvery     5                           // time between successive samples
+t1              0.260                       // relaxation time
+avef            3415.2                      // average frequency to get rid of high frequency fluctuations in the tcf
+omegaStart      2800                        // starting frequency for spectral density
+omegaStop       4000                        // ending frequency for spectral density
+omegaStep       5                           // resolution of spectral density
+natom_mol       4                           // atoms per molecule (4 for TIP4P (E3B2) and TIP4P2005 (E3B3))
+nchrom_mol      2                           // chromophores per water molecule (2 for stretch, 1 for bend)
+nzeros          25600                       // zero padding to tcf to smooth the spectrum 

@@ -4,6 +4,7 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <math.h>
 #include <xdrfile/xdrfile.h>
 #include <xdrfile/xdrfile_xtc.h>
@@ -20,26 +21,30 @@ int main(int argc, char *argv[])
     // ***              Variable Declaration            *** //
     // **************************************************** //
 
-    // User input
-    // TODO: make to get from user instead of hardcode
-    const char          *gmxf         = argv[1];                                // trajectory file
-    const char          *outf         = argv[2];
-    const user_real_t   dt            = 0.010;                                  // dt between frames in xtc file (in ps)
-    const int           ntcfpoints    = 200 ;                                   // the number of tcf points for each spectrum
-    const int           nsamples      = 20  ;                                   // number of samples to average for the total spectrum
-    const int           sampleEvery   = 5   ;                                   // sample a new configuration every sampleEvery ps. Note ntcfpoints*dt must be less than sampleEvery.
+    printf("\n>>> Setting default parameters\n");
+    // Default values for user input
+    char          gmxf[MAX_STR_LEN]; 
+    strncpy( gmxf, "n216/traj_comp.xtc", MAX_STR_LEN );                   // trajectory file
+    char          outf[MAX_STR_LEN]; 
+    strncpy( outf, " ", MAX_STR_LEN );                                    // name for output files
+    user_real_t   dt            = 0.010;                                  // dt between frames in xtc file (in ps)
+    int           ntcfpoints    = 150 ;                                   // the number of tcf points for each spectrum
+    int           nsamples      = 1   ;                                   // number of samples to average for the total spectrum
+    int           sampleEvery   = 10  ;                                   // sample a new configuration every sampleEvery ps. Note ntcfpoints*dt must be less than sampleEvery.
 
-    const user_real_t   t1            = 0.260;                                  // relaxation time ( in ps )
-    const user_real_t   avef          = 3415.2;                                 // the approximate average stretch frequency to get rid of high frequency oscillations in the time correlation function
-    const int           omegaStart    = 2000;                                   // starting frequency for spectral density
-    const int           omegaStop     = 5000;                                   // ending frequency for spectral density
-    const int           omegaStep     = 5;                                      // resolution for spectral density
+    user_real_t   t1            = 0.260;                                  // relaxation time ( in ps )
+    user_real_t   avef          = 3415.2;                                 // the approximate average stretch frequency to get rid of high frequency oscillations in the time correlation function
+    int           omegaStart    = 2000;                                   // starting frequency for spectral density
+    int           omegaStop     = 5000;                                   // ending frequency for spectral density
+    int           omegaStep     = 5;                                      // resolution for spectral density
 
-    const int           natom_mol     = 4;                                      // Atoms per water molecule  :: MODEL DEPENDENT
-    const int           nchrom_mol    = 2;                                      // Chromophores per molecule :: TWO for stretch -- ONE for bend
-    const int           nzeros        = 25600;                                  // zeros for padding fft
+    int           natom_mol     = 4;                                      // Atoms per water molecule  :: MODEL DEPENDENT
+    int           nchrom_mol    = 2;                                      // Chromophores per molecule :: TWO for stretch -- ONE for bend
+    int           nzeros        = 25600;                                  // zeros for padding fft
  
-
+    // get user input parameters
+    ir_init( argv, gmxf, outf, &dt, &ntcfpoints, &nsamples, &sampleEvery, &t1, &avef, &omegaStart, 
+             &omegaStop, &omegaStep, &natom_mol, &nchrom_mol, &nzeros );
 
     // Some useful variables and constants
     int                 natoms, nmol, frame, nchrom;
@@ -120,16 +125,10 @@ int main(int argc, char *argv[])
     XDRFILE *trj = xdrfile_open( gmxf, "r" ); 
     if ( trj == NULL )
     {
-        printf("The file %s could not be opened. Is the name correct?\n", gmxf);
+        printf("WARNING: The file %s could not be opened. Is the name correct?\n", gmxf);
         exit(EXIT_FAILURE);
     }
-    printf("Will read the trajectory from: %s.\n",gmxf);
-
-    if ( argv[2] == NULL )
-    {
-        printf("No name was provided for output files. Please provide a name for the output files as the second argument\n");
-        exit(EXIT_FAILURE);
-    }
+    printf(">>> Will read the trajectory from: %s.\n",gmxf);
 
 
     read_xtc_natoms( (char *)gmxf, &natoms);
@@ -138,8 +137,8 @@ int main(int argc, char *argv[])
     nchrom2      = (magma_int_t) nchrom*nchrom;
     ldkappa      = (magma_int_t) nchrom;
 
-    printf("Found %d atoms and %d molecules.\n",natoms, nmol);
-    printf("Found %d chromophores.\n",nchrom);
+    printf(">>> Found %d atoms and %d molecules.\n",natoms, nmol);
+    printf(">>> Found %d chromophores.\n",nchrom);
 
 
     // ***              MEMORY ALLOCATION               *** //
@@ -215,6 +214,10 @@ int main(int argc, char *argv[])
     // **************************************************** //
     // ***          OUTER LOOP OVER SAMPLES             *** //
 
+    printf("\n>>> Now calculate the absorption spectrum \n\n");
+    printf("----------------------------------------------------------\n");
+
+
     while( currentSample < nsamples )
     {
         // search trajectory for current sample starting point
@@ -226,15 +229,13 @@ int main(int argc, char *argv[])
         }
         if ( currentSample * sampleEvery == (int) gmxtime )
         {
-            printf("Now processing sample %d starting at %.2f ps\n", currentSample, gmxtime );
+            printf("\n\tNow processing sample %d starting at %.2f ps\n", currentSample, gmxtime );
 
 
         // **************************************************** //
         // ***         MAIN LOOP OVER TRAJECTORY            *** //
         for ( frame = 0; frame < ntcfpoints; frame++ )
         {
-
-
 
             // ---------------------------------------------------- //
             // ***          Get Info About The System           *** //
@@ -488,6 +489,10 @@ int main(int argc, char *argv[])
             // ***        Done with Time Correlation            *** //
             // ---------------------------------------------------- //
 
+            // update progress bar
+            printProgress( frame, ntcfpoints );
+
+
         }
 
         // copy time correlation function to persistant memory to calculate average spectrum
@@ -501,6 +506,8 @@ int main(int argc, char *argv[])
         }
     } // end outer loop
 
+    printf("\n\n----------------------------------------------------------\n");
+    printf("Finishing up...\n");
 
     // close xdr file
     xdrfile_close(trj);
@@ -574,14 +581,14 @@ int main(int argc, char *argv[])
     {
         if ( -1*(i-ntcfpoints-nzeros)*factor + avef <= (user_real_t) omegaStop  )
         {
-            fprintf(spec_lineshape, "%g %g\n", -1*(i-ntcfpoints-nzeros)*factor + avef, Ftcf[i]/(factor*(ntcfpoints+nzeros)));
+            fprintf(spec_lineshape, "%g %g\n", -1*(i-ntcfpoints-nzeros)*factor + avef, Ftcf[i]/2.0);//(factor*(ntcfpoints+nzeros)));// TO COMPARE WITH YICUN
         }
     }
     for ( int i = 0; i < ntcfpoints+nzeros / 2 ; i++)                   // "positive" FFT frequencies
     {
         if ( -1*i*factor + avef >= (user_real_t) omegaStart)
         {
-            fprintf(spec_lineshape, "%g %g\n", -1*i*factor + avef, Ftcf[i]/(factor*(ntcfpoints+nzeros)));
+            fprintf(spec_lineshape, "%g %g\n", -1*i*factor + avef, Ftcf[i]/2.0);///(factor*(ntcfpoints+nzeros)));// TO COMPARE WITH YICUN
         }
     }
     fclose(spec_lineshape);
@@ -638,7 +645,7 @@ int main(int argc, char *argv[])
     magma_finalize();
 
     end = time(NULL);
-    printf("Done with the calculation in %f seconds.\n", difftime(end,start));
+    printf("\n>>> Done with the calculation in %f seconds.\n", difftime(end,start));
 
     return 0;
 }
@@ -1073,4 +1080,130 @@ void copy_complex_GPU( user_complex_t *out_d, user_complex_t *in_d, magma_int_t 
     {
         out_d[i] = in_d[i];
     }
+}
+
+
+
+
+// parse input file to setup calculation
+void ir_init( char *argv[], char gmxf[], char outf[], user_real_t *dt, int *ntcfpoints, int *nsamples, int *sampleEvery,
+              user_real_t *t1, user_real_t *avef, int *omegaStart, int *omegaStop, int *omegaStep, int *natom_mol, 
+              int *nchrom_mol, int *nzeros )
+{
+    char                para[MAX_STR_LEN];
+    char                value[MAX_STR_LEN];
+
+
+    // Some useful variables and constants
+    /*
+    int                 natoms, nmol, frame, nchrom;
+    magma_int_t         nchrom2;
+    const int           ntcfpointsR     = (nzeros + ntcfpoints - 1)*2;                  // number of points for the real fourier transform
+    const int           nomega          = ( omegaStop - omegaStart ) / omegaStep + 1;   // number of frequencies for the spectral density
+    int                 currentSample   = 0;                                            // current sample
+    */
+
+    FILE *inpf = fopen(argv[1],"r");
+    if ( inpf == NULL )
+    {
+        printf("ERROR: Could not open %s. The first argument should contain  a  vaild\
+                file name that points to a file containing the simulation parameters.", argv[1]);
+        exit(EXIT_FAILURE);
+    }
+    else
+        printf(">>> Reading parameters from input file %s\n", argv[1]);
+
+    // Parse input file
+    while (fscanf( inpf, "%s%s%*[^\n]", para, value ) != EOF)
+    {
+        if ( strcmp(para,"xtcf") == 0 ) 
+        {
+            sscanf( value, "%s", gmxf );
+            printf("\tSetting xtc file %s\n", gmxf );
+        }
+        else if ( strcmp(para,"outf") == 0 )
+        {
+            sscanf( value, "%s", outf );
+            printf("\tSetting default file name to %s\n", outf);
+        }
+        else if ( strcmp(para,"dt") == 0 )
+        {
+            sscanf( value, "%f", (float *) dt );
+            printf("\tSettting dt to %f\n", (float) *dt);
+        }
+        else if ( strcmp(para,"ntcfpoints") == 0 )
+        {
+            sscanf( value, "%d", (int *) ntcfpoints );
+            printf("\tSetting the number of tcf points to %d\n", (int) *ntcfpoints);
+        }
+        else if ( strcmp(para,"nsamples") == 0 )
+        {
+            sscanf( value, "%d", (int *) nsamples);
+            printf("\tSetting nsamples to %d\n", (int) *nsamples); 
+        }
+        else if ( strcmp(para,"sampleEvery") == 0 )
+        {
+            sscanf( value, "%d", (int *) sampleEvery );
+            printf("\tSetting sampleEvery to %d (ps)\n", (int) *sampleEvery);
+        }
+        else if ( strcmp(para,"t1") == 0 )
+        {
+            sscanf( value, "%f", (float *) t1 );
+            printf("\tSetting t1 to %f (ps)\n", (float) *t1);
+        }
+        else if ( strcmp(para,"avef") == 0 )
+        {
+            sscanf( value, "%f", (float *) avef );
+            printf("\tSetting avef to %f\n", (float) *avef);
+        }
+        else if ( strcmp(para,"omegaStart") == 0 )
+        {
+            sscanf( value, "%d", (int *) omegaStart );
+            printf("\tSetting omegaStart to %d\n", (int) *omegaStart);
+        }
+        else if ( strcmp(para,"omegaStop") == 0 )
+        {
+            sscanf( value, "%d", (int *) omegaStop );
+            printf("\tSetting omegaStop to %d\n", (int) *omegaStop);
+        }
+        else if ( strcmp(para,"omegaStep") == 0 )
+        {
+            sscanf( value, "%d", (int *) omegaStep );
+            printf("\tSetting omegaStep to %d\n", (int) *omegaStep);
+        }
+        else if ( strcmp(para,"natom_mol") == 0 )
+        {
+            sscanf( value, "%d", (int *) natom_mol );
+            printf("\tSetting natom_mol to %d\n", (int) *natom_mol);
+        }
+        else if ( strcmp(para,"nchrom_mol") == 0 )
+        {
+            sscanf( value, "%d", (int *) nchrom_mol );
+            printf("\tSetting nchrom_mol to %d\n", (int) *nchrom_mol);
+        }
+        else if ( strcmp(para,"nzeros") == 0 )
+        {
+            sscanf( value, "%d", (int *) nzeros );
+            printf("\tSetting nzeros to %d\n", (int) *nzeros);
+        }
+        else
+        {
+            printf("WARNING: Parameter %s in input file %s not recognized, ignoring.\n", para, argv[1]);
+        }
+    }
+
+    fclose(inpf);
+    printf(">>> Done reading input file and setting parameters\n");
+
+}
+
+
+// Progress bar to keep updated on tcf
+void printProgress( int currentStep, int totalSteps )
+{
+    user_real_t percentage = (user_real_t) currentStep / (user_real_t) totalSteps;
+    int lpad = (int) (percentage*PWID);
+    int rpad = PWID - lpad;
+    printf("\r [%.*s%*s]%3d%%", lpad, PSTR, rpad, "",(int) (percentage*100));
+    fflush (stdout);
 }
