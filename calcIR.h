@@ -78,7 +78,7 @@ user_real_t dot3( user_real_t x[3], user_real_t y[3] );
 
 void ir_init( char *argv[], char gmxf[], char outf[], char model[], user_real_t *dt, int *ntcfpoints, int *nsamples, int *sampleEvery,
               user_real_t *t1, user_real_t *avef, int *omegaStart, int *omegaStop, int *omegaStep, int *natom_mol, 
-              int *nchrom_mol, int *nzeros );
+              int *nchrom_mol, int *nzeros, user_real_t *beginTime );
 
 
 void printProgress( int currentStep, int totalSteps );

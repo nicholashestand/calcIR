@@ -1,8 +1,8 @@
 xtcf            n216/traj_comp.xtc          // the xtc file
 outf            test                        // the name to prepend to the output files
 dt              0.010                       // time between tcf points in ps
-ntcfpoints      100                         // number of tcf points for each spectrum
-nsamples        100                         // the number of spectra to average
+ntcfpoints      150                         // number of tcf points for each spectrum
+nsamples        10                          // the number of spectra to average
 sampleEvery     10                          // time between successive samples
 t1              0.260                       // relaxation time
 avef            3415.2                      // average frequency to get rid of high frequency fluctuations in the tcf
@@ -13,3 +13,4 @@ natom_mol       4                           // atoms per molecule (4 for TIP4P (
 nchrom_mol      2                           // chromophores per water molecule (2 for stretch, 1 for bend)
 nzeros          25600                       // zero padding to tcf to smooth the spectrum 
 model           e3b3                        // the model -- the M site is moved for E3B and TIP4P2005
+beginTime       25                          // the equilibration time in ps (ie, dont calculate the spectrum for the first beginTime many picoseconds)

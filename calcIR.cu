@@ -34,6 +34,7 @@ int main(int argc, char *argv[])
     int           ntcfpoints    = 150 ;                                   // the number of tcf points for each spectrum
     int           nsamples      = 1   ;                                   // number of samples to average for the total spectrum
     int           sampleEvery   = 10  ;                                   // sample a new configuration every sampleEvery ps. Note ntcfpoints*dt must be less than sampleEvery.
+    user_real_t   beginTime     = 0   ;                                   // the beginning time in ps to allow for equilibration
 
     user_real_t   t1            = 0.260;                                  // relaxation time ( in ps )
     user_real_t   avef          = 3415.2;                                 // the approximate average stretch frequency to get rid of high frequency oscillations in the time correlation function
@@ -47,7 +48,7 @@ int main(int argc, char *argv[])
  
     // get user input parameters
     ir_init( argv, gmxf, outf, model, &dt, &ntcfpoints, &nsamples, &sampleEvery, &t1, 
-             &avef, &omegaStart, &omegaStop, &omegaStep, &natom_mol, &nchrom_mol, &nzeros );
+             &avef, &omegaStart, &omegaStop, &omegaStep, &natom_mol, &nchrom_mol, &nzeros, &beginTime );
 
     // Some useful variables and constants
     int                 natoms, nmol, frame, nchrom;
@@ -235,12 +236,14 @@ int main(int argc, char *argv[])
     {
         // search trajectory for current sample starting point
         xdrinfo = read_xtc( trj, natoms, &step, &gmxtime, box, x, &prec );
+
         if ( xdrinfo != 0 )
         {
             printf("WARNING:: read_xtc returned error %d.\nIs the trajectory long enough?\n", xdrinfo);
             exit(0);
         }
-        if ( currentSample * sampleEvery == (int) gmxtime )
+
+        if ( currentSample * sampleEvery + beginTime == (int) gmxtime )
         {
             printf("\n    Now processing sample %d/%d starting at %.2f ps\n", currentSample + 1, nsamples, gmxtime );
 
@@ -502,8 +505,11 @@ int main(int argc, char *argv[])
             // ***        Done with Time Correlation            *** //
             // ---------------------------------------------------- //
 
-            // update progress bar
-            printProgress( frame, ntcfpoints-1 );
+            // update progress bar if big enough, otherwise it really isn't necessary
+            if ( nchrom > 400 )
+            {
+                printProgress( frame, ntcfpoints-1 );
+            }
 
         }
 
@@ -1108,7 +1114,7 @@ void copy_complex_GPU( user_complex_t *out_d, user_complex_t *in_d, magma_int_t 
 // parse input file to setup calculation
 void ir_init( char *argv[], char gmxf[], char outf[], char model[], user_real_t *dt, int *ntcfpoints, int *nsamples, int *sampleEvery,
               user_real_t *t1, user_real_t *avef, int *omegaStart, int *omegaStop, int *omegaStep, int *natom_mol, 
-              int *nchrom_mol, int *nzeros )
+              int *nchrom_mol, int *nzeros, user_real_t *beginTime  )
 {
     char                para[MAX_STR_LEN];
     char                value[MAX_STR_LEN];
@@ -1214,6 +1220,11 @@ void ir_init( char *argv[], char gmxf[], char outf[], char model[], user_real_t 
         {
             sscanf( value, "%d", (int *) nzeros );
             printf("\tSetting nzeros to %d\n", (int) *nzeros);
+        }
+        else if ( strcmp(para,"beginTime") == 0 )
+        {
+            sscanf( value, "%f", (float *) beginTime );
+            printf("\tSetting equilibration time to %f\n", (float) *beginTime );
         }
         else
         {
