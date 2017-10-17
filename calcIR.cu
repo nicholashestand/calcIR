@@ -1224,7 +1224,7 @@ void ir_init( char *argv[], char gmxf[], char outf[], char model[], user_real_t 
         else if ( strcmp(para,"beginTime") == 0 )
         {
             sscanf( value, "%f", (float *) beginTime );
-            printf("\tSetting equilibration time to %f\n", (float) *beginTime );
+            printf("\tSetting equilibration time to %f (ps)\n", (float) *beginTime );
         }
         else
         {
