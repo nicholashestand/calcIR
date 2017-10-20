@@ -84,6 +84,16 @@ int main(int argc, char *argv[])
     user_real_t         *kappa_d;                                                       // the hamiltonian on the GPU
     const int           blockSize = 128;                                                // The number of threads to launch per block
 
+
+    // Variables for F matrix integration
+#ifdef USE_EULER
+    user_real_t         max_int_steps = 2.0;                                            // number of Adams integration steps between each dt
+    user_complex_t      *k1_d, *k2_d, *k3_d, *k4_d;                                     // Runge Kutta variables
+    int                 order_counter = 0 ;
+#else
+    user_real_t         arg;                                                            // argument of exponential
+#endif
+
     // magma variables for ssyevr
     user_real_t         aux_work[1];                                                    // To get optimal size of lwork
     magma_int_t         aux_iwork[1], info;                                             // To get optimal liwork, and return info
@@ -115,7 +125,6 @@ int main(int argc, char *argv[])
     user_real_t         *Ftcf, *Ftcf_d;                                                 // Fourier transformed time correlation function
     user_real_t         *tmpFtcf;                                                       // Temporary Fourier transformed time correlation function
     user_real_t         *time2;                                                         // Time array for tcf
-    user_real_t         arg;                                                            // argument of exponential
 
     // For fft on gpu
     cufftHandle         plan;
@@ -219,6 +228,13 @@ int main(int argc, char *argv[])
     magma_smalloc( &w_d         , nchrom );
     magma_cmalloc( &tcf_d       , ntcfpoints);
 #endif
+#ifdef USE_EULER
+    magma_cmalloc( &k1_d        , nchrom2);
+    magma_cmalloc( &k2_d        , nchrom2);
+    magma_cmalloc( &k3_d        , nchrom2);
+    magma_cmalloc( &k4_d        , nchrom2);
+#endif
+ 
 
 
     // ***          END MEMORY ALLOCATION               *** //
@@ -269,7 +285,7 @@ int main(int argc, char *argv[])
             get_eproj_GPU <<<numBlocks,blockSize>>> ( x_d, boxl, natoms, natom_mol, nchrom, nchrom_mol, nmol, imodel, eproj_d );
 
             get_kappa_GPU <<<numBlocks,blockSize>>> ( x_d, boxl, natoms, natom_mol, nchrom, nchrom_mol, nmol, eproj_d, 
-                                                      kappa_d, mux_d, muy_d, muz_d );
+                                                      kappa_d, mux_d, muy_d, muz_d, avef );
 
             
 
@@ -309,6 +325,8 @@ int main(int argc, char *argv[])
                 magma_imalloc_cpu   ( &iwork, liwork );
 #endif
             }
+
+#ifndef USE_EULER   // if using Euler method for integration, we don't need to do these diagonalizations
 #ifdef USE_DOUBLES
             magma_dsyevd_gpu( MagmaVec, MagmaUpper, (magma_int_t) nchrom, kappa_d, ldkappa,
                               w, wA, ldkappa, work, lwork, iwork, liwork, &info );
@@ -316,10 +334,18 @@ int main(int argc, char *argv[])
             magma_ssyevd_gpu( MagmaVec, MagmaUpper, (magma_int_t) nchrom, kappa_d, ldkappa,
                               w, wA, ldkappa, work, lwork, iwork, liwork, &info );
 #endif
+#endif
 
 
             // ***          Done with the Diagonalization       *** //
             // ---------------------------------------------------- //
+
+
+
+
+
+
+
 
 
 
@@ -374,17 +400,25 @@ int main(int argc, char *argv[])
 
 
 
+
+
+
+
+
             // ---------------------------------------------------- //
 
             // ***           Time Correlation Function          *** //
 
             // cast variables to complex to calculate time correlation function (which is complex)
             cast_to_complex_GPU <<<numBlocks,blockSize>>> ( kappa_d, ckappa_d, nchrom2);
-            cast_to_complex_GPU <<<numBlocks,blockSize>>> ( mux_d  , cmux_d  , nchrom        );
-            cast_to_complex_GPU <<<numBlocks,blockSize>>> ( muy_d  , cmuy_d  , nchrom        );
-            cast_to_complex_GPU <<<numBlocks,blockSize>>> ( muz_d  , cmuz_d  , nchrom        );
+            cast_to_complex_GPU <<<numBlocks,blockSize>>> ( mux_d  , cmux_d  , nchrom );
+            cast_to_complex_GPU <<<numBlocks,blockSize>>> ( muy_d  , cmuy_d  , nchrom );
+            cast_to_complex_GPU <<<numBlocks,blockSize>>> ( muz_d  , cmuz_d  , nchrom );
 
-            // First calculate the propigation matrix in the local basis
+
+
+
+            // ***           Calculate the F matrix             *** //
             if ( frame == 0 )
             {
                 // initialize the F matrix at t=0 to the unit matrix
@@ -406,6 +440,68 @@ int main(int argc, char *argv[])
             }
             else
             {
+#ifdef USE_EULER
+                // Integrate F with 4th order Adams-Bashfort
+                // The kappa matrix is assumed to be time independent over this integration cycle of max_int_steps
+
+                // reset current order if at the begining of a sample
+                if ( frame == 1 ) order_counter = 1;
+
+                for ( int i=0; i<(int) max_int_steps; i++ )// take multiple steps
+                {
+                    // find current dF/dt = iF(t+i)k(t)
+                    magma_cgemm( MagmaNoTrans, MagmaNoTrans, (magma_int_t) nchrom, (magma_int_t) nchrom, 
+                                (magma_int_t) nchrom, MAGMA_MAKE(0.0,1.0), F_d, nchrom, ckappa_d, nchrom,
+                                 MAGMA_ZERO, ctmpmat_d, nchrom, queue );
+
+                    // For the first step use Euler since previous values are not available
+                    if ( order_counter == 1 )
+                    //if ( frame == 0 && i == 0 )
+                    {
+                        // save current value for later
+                        magma_ccopy( (magma_int_t) nchrom2, ctmpmat_d , 1, k1_d, 1, queue );
+                        magma_caxpy( (magma_int_t) nchrom2, MAGMA_MAKE(dt/HBAR/max_int_steps,0), k1_d, 1, F_d, 1, queue );
+                        order_counter = 2;
+
+                    }
+                    // use ADAMS bensforth two-step method for step 2
+                    else if ( order_counter == 2 )
+                    //else if ( frame == 0 && i == 1 )
+                    {
+                        // save current values for later
+                        magma_ccopy( (magma_int_t) nchrom2, ctmpmat_d , 1, k2_d, 1, queue );
+                        magma_caxpy( (magma_int_t) nchrom2, MAGMA_MAKE( 3.0/2.0*dt/HBAR/max_int_steps,0), k2_d, 1, F_d, 1, queue );
+                        magma_caxpy( (magma_int_t) nchrom2, MAGMA_MAKE(-1.0/2.0*dt/HBAR/max_int_steps,0), k1_d, 1, F_d, 1, queue );
+                        order_counter = 3;
+                    }
+                    // use ADAMS bensforth three-step method
+                    //else if ( frame == 0 && i == 2 )
+                    else if ( order_counter == 3 )
+                    {
+                        // save current values for later
+                        magma_ccopy( (magma_int_t) nchrom2, ctmpmat_d , 1, k3_d, 1, queue );
+                        magma_caxpy( (magma_int_t) nchrom2, MAGMA_MAKE(23.0/12.0*dt/HBAR/max_int_steps,0), k3_d, 1, F_d, 1, queue );
+                        magma_caxpy( (magma_int_t) nchrom2, MAGMA_MAKE(-4.0/3.0 *dt/HBAR/max_int_steps,0), k2_d, 1, F_d, 1, queue );
+                        magma_caxpy( (magma_int_t) nchrom2, MAGMA_MAKE(+5.0/12.0*dt/HBAR/max_int_steps,0), k1_d, 1, F_d, 1, queue );
+                        order_counter = 4;
+                    }
+                     // use ADAMS bensforth four-step method
+                    else
+                    {
+                        // save current values for later
+                        magma_ccopy( (magma_int_t) nchrom2, ctmpmat_d , 1, k4_d, 1, queue );
+                        magma_caxpy( (magma_int_t) nchrom2, MAGMA_MAKE( 55.0/24.0 *dt/HBAR/max_int_steps,0), k4_d, 1, F_d, 1, queue );
+                        magma_caxpy( (magma_int_t) nchrom2, MAGMA_MAKE(-59.0/24.0 *dt/HBAR/max_int_steps,0), k3_d, 1, F_d, 1, queue );
+                        magma_caxpy( (magma_int_t) nchrom2, MAGMA_MAKE( 37.0/24.0 *dt/HBAR/max_int_steps,0), k2_d, 1, F_d, 1, queue );
+                        magma_caxpy( (magma_int_t) nchrom2, MAGMA_MAKE(-3.0/8.0   *dt/HBAR/max_int_steps,0), k1_d, 1, F_d, 1, queue );
+                        // shuffle definitions for next iteration //
+                        magma_ccopy( (magma_int_t) nchrom2, k2_d, 1, k1_d, 1, queue );
+                        magma_ccopy( (magma_int_t) nchrom2, k3_d, 1, k2_d, 1, queue );
+                        magma_ccopy( (magma_int_t) nchrom2, k4_d, 1, k3_d, 1, queue );
+                    }
+                }
+#else          
+                // Exact method with diagonalization
                 // build the propigator
                 for ( int i = 0; i < nchrom; i++ )
                 {
@@ -415,7 +511,7 @@ int main(int argc, char *argv[])
                         prop[ i*nchrom + j] = MAGMA_ZERO;
                     }
                     // P = exp(iwt/hbar)
-                    arg   = ((w[i] - avef)* dt / HBAR);
+                    arg   = w[i] * dt / HBAR;
                     prop[ i*nchrom + i ] = MAGMA_MAKE( cos(arg), sin(arg) );
                 }
 
@@ -438,6 +534,9 @@ int main(int argc, char *argv[])
                 magma_zgemm( MagmaNoTrans, MagmaNoTrans, (magma_int_t) nchrom, (magma_int_t) nchrom, 
                              (magma_int_t) nchrom, MAGMA_ONE, prop_d, ldkappa, F_d, ldkappa, 
                              MAGMA_ZERO, ctmpmat_d, ldkappa, queue );
+
+                // copy the F matrix back from the temporary variable to F_d
+                magma_zcopy( (magma_int_t) nchrom2, ctmpmat_d , 1, F_d, 1, queue );
 #else
                 // ctmpmat_d = ckappa_d * prop_d
                 magma_cgemm( MagmaNoTrans, MagmaNoTrans, (magma_int_t) nchrom, (magma_int_t) nchrom, 
@@ -453,11 +552,13 @@ int main(int argc, char *argv[])
                 magma_cgemm( MagmaNoTrans, MagmaNoTrans, (magma_int_t) nchrom, (magma_int_t) nchrom, 
                              (magma_int_t) nchrom, MAGMA_ONE, prop_d, ldkappa, F_d, ldkappa, 
                              MAGMA_ZERO, ctmpmat_d, ldkappa, queue );
-#endif
 
                 // copy the F matrix back from the temporary variable to F_d
-                copy_complex_GPU <<<numBlocks,blockSize>>> ( F_d  , ctmpmat_d  , nchrom2);
+                magma_ccopy( (magma_int_t) nchrom2, ctmpmat_d , 1, F_d, 1, queue );
+#endif
+#endif
             }
+            // ***           Done updating the F matrix         *** //
 
 
             // calculate mFm for x y and z components
@@ -650,6 +751,12 @@ int main(int argc, char *argv[])
     magma_free(F_d);
     magma_free(prop_d);
     magma_free(ctmpmat_d);
+#ifdef USE_EULER
+    magma_free(k1_d);
+    magma_free(k2_d);
+    magma_free(k3_d);
+    magma_free(k4_d);
+#endif
     magma_free(w_d);
     magma_free(tcf_d);
     magma_free(pdtcf_d);
@@ -831,7 +938,7 @@ void get_eproj_GPU( rvec *x, float boxl, int natoms, int natom_mol, int nchrom, 
  **********************************************************/
 __global__
 void get_kappa_GPU( rvec *x, float boxl, int natoms, int natom_mol, int nchrom, int nchrom_mol, int nmol, 
-                    user_real_t *eproj, user_real_t *kappa, user_real_t *mux, user_real_t *muy, user_real_t *muz)
+                    user_real_t *eproj, user_real_t *kappa, user_real_t *mux, user_real_t *muy, user_real_t *muz, user_real_t avef)
 {
     
     int n, m, istart, istride;
@@ -927,26 +1034,19 @@ void get_kappa_GPU( rvec *x, float boxl, int natoms, int natom_mol, int nchrom, 
             // the diagonal energy
             if ( chromn == chromm )
             {
-                //kappa[chromn*nchrom + chromm]   =   3500.0;
-                //continue;
-                // Note that this is a flattened 2d array
-                kappa[chromn*nchrom + chromm]   =   wm; 
+                // Note that this is a flattened 2d array -- subtract high frequency energies to get rid of highly oscillatory parts of the F matrix
+                kappa[chromn*nchrom + chromm]   = wm - avef;
             }
 
             // intramolecular coupling
             else if ( m == n )
             {
-                //kappa[chromn*nchrom + chromm]   =   0.0;
-                //continue;
                 kappa[chromn*nchrom + chromm]   =  (-1361.0 + 27165*(En + Em))*xn*xm - 1.887*pn*pm;
             }
 
             // intermolecular coupling
             else
             {
-                
-                //kappa[chromn*nchrom + chromm]   =   0.0;
-                //continue;
                 
                 // calculate the distance between dipoles
                 // they are located 0.67 A from the oxygen along the OH bond
@@ -1086,25 +1186,6 @@ void cast_to_complex_GPU ( user_real_t *d_d, user_complex_t *z_d, magma_int_t n 
     for ( i = istart; i < n; i += istride )
     {
         z_d[i] = MAGMA_MAKE( d_d[i], 0.0 ); 
-    }
-}
-
-
-
-// copy a complex matrix to another one
-__global__
-void copy_complex_GPU( user_complex_t *out_d, user_complex_t *in_d, magma_int_t n )
-{
-    int istart, istride, i;
-    
-    // split up each desired frequency to separate thread on GPU
-    istart  =   blockIdx.x * blockDim.x + threadIdx.x;
-    istride =   blockDim.x * gridDim.x;
-
-    // convert from float to complex
-    for ( i = istart; i < n; i += istride )
-    {
-        out_d[i] = in_d[i];
     }
 }
 

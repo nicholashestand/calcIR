@@ -48,7 +48,7 @@ void get_eproj_GPU( rvec *x, float boxl, int natoms, int natom_mol, int nchrom, 
 
 __global__
 void get_kappa_GPU( rvec *x, float boxl, int natoms, int natom_mol, int nchrom, int nchrom_mol, int nmol, user_real_t *eproj,
-                    user_real_t *kappa, user_real_t *mux, user_real_t *muy, user_real_t *muz);
+                    user_real_t *kappa, user_real_t *mux, user_real_t *muy, user_real_t *muz, user_real_t avef);
 
 
 __global__
@@ -58,10 +58,6 @@ void get_spectral_density( user_real_t *w, user_real_t *MUX, user_real_t *MUY, u
 
 __global__
 void cast_to_complex_GPU( user_real_t *s_d, user_complex_t *c_d, magma_int_t n );
-
-
-__global__
-void copy_complex_GPU( user_complex_t *out_d, user_complex_t *in_d, magma_int_t n );
 
 
 __host__ __device__
