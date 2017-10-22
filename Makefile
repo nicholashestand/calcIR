@@ -1,7 +1,6 @@
 src     = calcIR.cu
 exes    = calcIR.exe
 exed    = calcIR_d.exe
-exeseuler= calcIReuler.exe
 NVCC    = nvcc
 INC     = -I$(CUDADIR)/include -I$(MKLROOT)/include -I$(MAGMADIR)/include
 FLAGS	= -Xcompiler "-fPIC -Wall -Wno-unused-function" -DMKL_ILP64 -Wno-deprecated-gpu-targets
@@ -10,14 +9,10 @@ LIBDIRS = -L/opt/intel/mkl/lib/intel64 -L/user/local/cuda/lib64 -L/usr/local/mag
 INCDIRS = -I/opt/intel/mkl/include -I/user/local/cuda/include -I/user/local/magma/include
 
 
-all: ${exes} ${exed} ${exeseuler}
+all: ${exes} ${exed}
 
 ${exes}: ${src}
 	$(NVCC) $(src) -o $(exes) $(FLAGS) $(LIBDIRS) $(LIBS) $(INCDIRS)
-
-${exeseuler}: ${src}
-	$(NVCC) $(src) -o $(exeseuler) $(FLAGS) $(LIBDIRS) $(LIBS) $(INCDIRS) -DUSE_EULER=1
-
 
 ${exed}: ${src}
 	$(NVCC) $(src) -o $(exed) $(FLAGS) $(LIBDIRS) $(LIBS) $(INCDIRS) -DUSE_DOUBLES=1

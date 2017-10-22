@@ -30,6 +30,8 @@ int main(int argc, char *argv[])
     char          model[MAX_STR_LEN];
     strncpy( model, "tip4p", MAX_STR_LEN );
     int           imodel        = 0;
+    int           ispecd        = 0;
+    int           ifintmeth     = 0;
     user_real_t   dt            = 0.010;                                  // dt between frames in xtc file (in ps)
     int           ntcfpoints    = 150 ;                                   // the number of tcf points for each spectrum
     int           nsamples      = 1   ;                                   // number of samples to average for the total spectrum
@@ -45,10 +47,14 @@ int main(int argc, char *argv[])
     int           natom_mol     = 4;                                      // Atoms per water molecule  :: MODEL DEPENDENT
     int           nchrom_mol    = 2;                                      // Chromophores per molecule :: TWO for stretch -- ONE for bend
     int           nzeros        = 25600;                                  // zeros for padding fft
+
+    user_real_t   max_int_steps = 2.0;                                    // number of Adams integration steps between each dt
+
  
     // get user input parameters
-    ir_init( argv, gmxf, outf, model, &dt, &ntcfpoints, &nsamples, &sampleEvery, &t1, 
-             &avef, &omegaStart, &omegaStop, &omegaStep, &natom_mol, &nchrom_mol, &nzeros, &beginTime );
+    ir_init( argv, gmxf, outf, model, &ifintmeth, &dt, &ntcfpoints, &nsamples, &sampleEvery, &t1, 
+             &avef, &omegaStart, &omegaStop, &omegaStep, &natom_mol, &nchrom_mol, &nzeros, &beginTime,
+             &ispecd, &max_int_steps);
 
     // Some useful variables and constants
     int                 natoms, nmol, frame, nchrom;
@@ -58,14 +64,8 @@ int main(int argc, char *argv[])
     int                 currentSample   = 0;                                            // current sample
 
     // set model to integer to pass to gpu kernel to test in if statement for remaking OM bond lengths
-    if ( strcmp( model, "tip4p2005" ) == 0 || strcmp( model, "e3b3" ) == 0 )
-    {
-        imodel = 1;
-    }
-    else
-    {
-        imodel = 0;
-    }
+    if ( strcmp( model, "tip4p2005" ) == 0 || strcmp( model, "e3b3" ) == 0 ) imodel = 1;
+    else imodel = 0;
 
     // Trajectory stuff for the CPU
     rvec                *x;                                                             // Position vector
@@ -86,18 +86,14 @@ int main(int argc, char *argv[])
 
 
     // Variables for F matrix integration
-#ifdef USE_EULER
-    user_real_t         max_int_steps = 2.0;                                            // number of Adams integration steps between each dt
-    user_complex_t      *k1_d, *k2_d, *k3_d, *k4_d;                                     // Runge Kutta variables
-    int                 order_counter = 0 ;
-#else
+    user_complex_t      *k1_d, *k2_d, *k3_d, *k4_d;                                     // Adams integration variables
+    int                 order_counter = 0 ;                                             // To keep track of the current order of the Adams method
     user_real_t         arg;                                                            // argument of exponential
-#endif
 
     // magma variables for ssyevr
     user_real_t         aux_work[1];                                                    // To get optimal size of lwork
     magma_int_t         aux_iwork[1], info;                                             // To get optimal liwork, and return info
-    magma_int_t         ldkappa, lwork, liwork;                                         // Leading dim of kappa, sizes of work arrays
+    magma_int_t         lwork, liwork;                                         // Leading dim of kappa, sizes of work arrays
     magma_int_t         *iwork;                                                         // Work array
     user_real_t         *work;                                                          // Work array
     user_real_t         *w   ;                                                          // Eigenvalues
@@ -123,7 +119,6 @@ int main(int argc, char *argv[])
     user_complex_t      *tcf, *tcf_d;                                                   // Time correlation function
     user_complex_t      *tmptcf;                                                        // A temporary function for time correlation function
     user_real_t         *Ftcf, *Ftcf_d;                                                 // Fourier transformed time correlation function
-    user_real_t         *tmpFtcf;                                                       // Temporary Fourier transformed time correlation function
     user_real_t         *time2;                                                         // Time array for tcf
 
     // For fft on gpu
@@ -158,7 +153,6 @@ int main(int argc, char *argv[])
     nmol         = natoms / natom_mol;
     nchrom       = nmol * nchrom_mol;
     nchrom2      = (magma_int_t) nchrom*nchrom;
-    ldkappa      = (magma_int_t) nchrom;
 
     printf(">>> Found %d atoms and %d molecules.\n",natoms, nmol);
     printf(">>> Found %d chromophores.\n",nchrom);
@@ -168,79 +162,82 @@ int main(int argc, char *argv[])
     // **************************************************** //
 
     // determine the number of blocks to launch on the gpu 
-    // each thread takes care of one chromophore
+    // each thread takes care of one chromophore for building the electric field and Hamiltonian
     const int numBlocks = (nchrom+blockSize-1)/blockSize;
     
     // Initialize magma math library and initialize queue
     magma_init();
     magma_queue_create( 0, &queue ); 
 
-    // allocate memory for arrays on the CPU
+    // CPU arrays
     x       = (rvec*)            malloc( natoms       * sizeof(x[0] ));
-    omega   = (user_real_t *)    malloc( nomega       * sizeof(user_real_t));
-    Sw      = (user_real_t *)    calloc( nomega       , sizeof(user_real_t));
-    tmpSw   = (user_real_t *)    malloc( nomega       * sizeof(user_real_t));
     time2   = (user_real_t *)    malloc( ntcfpoints   * sizeof(user_real_t));
     Ftcf    = (user_real_t *)    calloc( ntcfpointsR  , sizeof(user_real_t));
-    tmpFtcf = (user_real_t *)    malloc( ntcfpointsR  * sizeof(user_real_t));
     tmptcf  = (user_complex_t *) malloc( ntcfpoints   * sizeof(user_complex_t));
     tcf     = (user_complex_t *) calloc( ntcfpoints   , sizeof(user_complex_t));
     F       = (user_complex_t *) calloc( nchrom2      , sizeof(user_complex_t));
-    prop    = (user_complex_t *) calloc( nchrom2      , sizeof(user_complex_t));
+
+    // GPU arrays
+    cudaMalloc( &x_d      , natoms       *sizeof(x[0]));
+    cudaMalloc( &Ftcf_d   , ntcfpointsR  *sizeof(user_real_t));
+    cudaMalloc( &mux_d    , nchrom       *sizeof(user_real_t));
+    cudaMalloc( &muy_d    , nchrom       *sizeof(user_real_t));
+    cudaMalloc( &muz_d    , nchrom       *sizeof(user_real_t));
+    cudaMalloc( &eproj_d  , nchrom       *sizeof(user_real_t));
+    cudaMalloc( &kappa_d  , nchrom2      *sizeof(user_real_t));
+    cudaMalloc( &cmux_d   , nchrom       *sizeof(user_complex_t));
+    cudaMalloc( &cmuy_d   , nchrom       *sizeof(user_complex_t));
+    cudaMalloc( &cmuz_d   , nchrom       *sizeof(user_complex_t));
+    cudaMalloc( &cmux0_d  , nchrom       *sizeof(user_complex_t));
+    cudaMalloc( &cmuy0_d  , nchrom       *sizeof(user_complex_t));
+    cudaMalloc( &cmuz0_d  , nchrom       *sizeof(user_complex_t));
+    cudaMalloc( &tmpmu_d  , nchrom       *sizeof(user_complex_t));
+    cudaMalloc( &ckappa_d , nchrom2      *sizeof(user_complex_t));
+    cudaMalloc( &F_d      , nchrom2      *sizeof(user_complex_t));
+    cudaMalloc( &ctmpmat_d, nchrom2      *sizeof(user_complex_t));
+    cudaMalloc( &tcf_d    , ntcfpoints   *sizeof(user_complex_t));
 
 
-    
-    // allocate memory for arrays on the GPU
-    cudaMalloc( &x_d     , natoms       *sizeof(x[0]));
-    cudaMalloc( &mux_d   , nchrom       *sizeof(user_real_t));
-    cudaMalloc( &muy_d   , nchrom       *sizeof(user_real_t));
-    cudaMalloc( &muz_d   , nchrom       *sizeof(user_real_t));
-    cudaMalloc( &MUX_d   , nchrom       *sizeof(user_real_t));
-    cudaMalloc( &MUY_d   , nchrom       *sizeof(user_real_t));
-    cudaMalloc( &MUZ_d   , nchrom       *sizeof(user_real_t));
-    cudaMalloc( &omega_d , nomega       *sizeof(user_real_t));
-    cudaMalloc( &Sw_d    , nomega       *sizeof(user_real_t));
-    cudaMalloc( &Ftcf_d  , ntcfpointsR  *sizeof(user_real_t));
-    cudaMalloc( &cmux_d  , nchrom       *sizeof(user_complex_t));
-    cudaMalloc( &cmuy_d  , nchrom       *sizeof(user_complex_t));
-    cudaMalloc( &cmuz_d  , nchrom       *sizeof(user_complex_t));
-    cudaMalloc( &cmux0_d , nchrom       *sizeof(user_complex_t));
-    cudaMalloc( &cmuy0_d , nchrom       *sizeof(user_complex_t));
-    cudaMalloc( &cmuz0_d , nchrom       *sizeof(user_complex_t));
-    cudaMalloc( &tmpmu_d , nchrom       *sizeof(user_complex_t));
+    // memory for spectral density calculation, if requested
+    if ( ispecd == 0 )
+    {
+        // CPU arrays
+        omega   = (user_real_t *)    malloc( nomega       * sizeof(user_real_t));
+        Sw      = (user_real_t *)    calloc( nomega       , sizeof(user_real_t));
+        tmpSw   = (user_real_t *)    malloc( nomega       * sizeof(user_real_t));
 
-#ifdef USE_DOUBLES
-    magma_dmalloc( &eproj_d     , nchrom );
-    magma_dmalloc( &kappa_d     , ldkappa*nchrom);
-    magma_zmalloc( &ckappa_d    , nchrom2);
-    magma_zmalloc( &F_d         , nchrom2);
-    magma_zmalloc( &prop_d      , nchrom2);
-    magma_zmalloc( &ctmpmat_d   , nchrom2);
-    magma_dmalloc( &w_d         , nchrom );
-    magma_zmalloc( &tcf_d       , ntcfpoints);
-#else
-    magma_smalloc( &eproj_d     , nchrom );
-    magma_smalloc( &kappa_d     , ldkappa*nchrom);
-    magma_cmalloc( &ckappa_d    , nchrom2);
-    magma_cmalloc( &F_d         , nchrom2);
-    magma_cmalloc( &prop_d      , nchrom2);
-    magma_cmalloc( &ctmpmat_d   , nchrom2);
-    magma_smalloc( &w_d         , nchrom );
-    magma_cmalloc( &tcf_d       , ntcfpoints);
-#endif
-#ifdef USE_EULER
-    magma_cmalloc( &k1_d        , nchrom2);
-    magma_cmalloc( &k2_d        , nchrom2);
-    magma_cmalloc( &k3_d        , nchrom2);
-    magma_cmalloc( &k4_d        , nchrom2);
-#endif
+        // GPU arrays
+        cudaMalloc( &MUX_d   , nchrom       *sizeof(user_real_t));
+        cudaMalloc( &MUY_d   , nchrom       *sizeof(user_real_t));
+        cudaMalloc( &MUZ_d   , nchrom       *sizeof(user_real_t));
+        cudaMalloc( &omega_d , nomega       *sizeof(user_real_t));
+        cudaMalloc( &Sw_d    , nomega       *sizeof(user_real_t));
+        cudaMalloc( &w_d     , nomega       *sizeof(user_real_t));
+    }
  
 
+    // memory for integration of F depending on which method is used
+    if ( ifintmeth == 0 ) // exact
+    {
+        prop    = (user_complex_t *) calloc( nchrom2      , sizeof(user_complex_t));
+        cudaMalloc( &prop_d  , nchrom2      *sizeof(user_complex_t));
+    }
+    else if ( ifintmeth == 1 ) // adams integration
+    {
+        cudaMalloc( &k1_d    , nchrom2      *sizeof(user_complex_t));
+        cudaMalloc( &k2_d    , nchrom2      *sizeof(user_complex_t));
+        cudaMalloc( &k3_d    , nchrom2      *sizeof(user_complex_t));
+        cudaMalloc( &k4_d    , nchrom2      *sizeof(user_complex_t));
+    }
 
     // ***          END MEMORY ALLOCATION               *** //
     // **************************************************** //
     
 
+
+
+
+    
     // **************************************************** //
     // ***          OUTER LOOP OVER SAMPLES             *** //
 
@@ -259,7 +256,7 @@ int main(int argc, char *argv[])
             exit(0);
         }
 
-        if ( currentSample * sampleEvery + beginTime == (int) gmxtime )
+        if ( currentSample * sampleEvery + (int) beginTime == (int) gmxtime )
         {
             printf("\n    Now processing sample %d/%d starting at %.2f ps\n", currentSample + 1, nsamples, gmxtime );
 
@@ -269,8 +266,10 @@ int main(int argc, char *argv[])
         for ( frame = 0; frame < ntcfpoints; frame++ )
         {
 
+
             // ---------------------------------------------------- //
             // ***          Get Info About The System           *** //
+
 
             // read the current frame from the trajectory file and copy to device memory
             // note it was read in the outer loop if we are at frame 0
@@ -287,7 +286,6 @@ int main(int argc, char *argv[])
             get_kappa_GPU <<<numBlocks,blockSize>>> ( x_d, boxl, natoms, natom_mol, nchrom, nchrom_mol, nmol, eproj_d, 
                                                       kappa_d, mux_d, muy_d, muz_d, avef );
 
-            
 
             // ***          Done getting System Info            *** //
             // ---------------------------------------------------- //
@@ -298,44 +296,45 @@ int main(int argc, char *argv[])
             // ---------------------------------------------------- //
             // ***          Diagonalize the Hamiltonian         *** //
 
-            // if the first time, query for optimal workspace dimensions
-            if ( frame == 0 && currentSample == 0)
+
+            // Note that kappa only needs to be diagonalized if the exact integration method is requested or the spectral density
+            if ( ifintmeth == 0 || ispecd == 0 )
             {
+
+
+                // if the first time, query for optimal workspace dimensions
+                if ( frame == 0 && currentSample == 0 )
+                {
 #ifdef USE_DOUBLES
-                magma_dsyevd_gpu( MagmaVec, MagmaUpper, (magma_int_t) nchrom, NULL, ldkappa, 
-                                  NULL, NULL, (magma_int_t) nchrom, aux_work, -1, aux_iwork, -1, &info );
+                    magma_dsyevd_gpu( MagmaVec, MagmaUpper, (magma_int_t) nchrom, NULL, (magma_int_t) nchrom, 
+                                      NULL, NULL, (magma_int_t) nchrom, aux_work, -1, aux_iwork, -1, &info );
 #else
-                magma_ssyevd_gpu( MagmaVec, MagmaUpper, (magma_int_t) nchrom, NULL, ldkappa, 
-                                  NULL, NULL, (magma_int_t) nchrom, aux_work, -1, aux_iwork, -1, &info );
+                    magma_ssyevd_gpu( MagmaVec, MagmaUpper, (magma_int_t) nchrom, NULL, (magma_int_t) nchrom, 
+                                      NULL, NULL, (magma_int_t) nchrom, aux_work, -1, aux_iwork, -1, &info );
 #endif
+                    lwork   = (magma_int_t) aux_work[0];
+                    liwork  = aux_iwork[0];
 
-                lwork   = (magma_int_t) aux_work[0];
-                liwork  = aux_iwork[0];
-
-                // make space for work arrays and eigenvalues and other stuff
+                    // allocate work arrays, eigenvalues and other stuff
+                    w       = (user_real_t *)    malloc( nchrom       * sizeof(user_real_t));
+                    magma_imalloc_cpu   ( &iwork, liwork );
 #ifdef USE_DOUBLES
-                magma_dmalloc_cpu   ( &w  , (magma_int_t) nchrom );
-                magma_dmalloc_pinned( &wA , (magma_int_t) nchrom*ldkappa );
-                magma_dmalloc_pinned( &work , lwork  );
-                magma_imalloc_cpu   ( &iwork, liwork );
+                    magma_dmalloc_pinned( &wA , nchrom2 );
+                    magma_dmalloc_pinned( &work , lwork  );
 #else
-                magma_smalloc_cpu   ( &w  , (magma_int_t) nchrom );
-                magma_smalloc_pinned( &wA , (magma_int_t) nchrom*ldkappa );
-                magma_smalloc_pinned( &work , lwork  );
-                magma_imalloc_cpu   ( &iwork, liwork );
+                    magma_smalloc_pinned( &wA , nchrom2 );
+                    magma_smalloc_pinned( &work , lwork  );
+#endif
+                }
+
+#ifdef USE_DOUBLES
+                magma_dsyevd_gpu( MagmaVec, MagmaUpper, (magma_int_t) nchrom, kappa_d, (magma_int_t) nchrom,
+                                  w, wA, (magma_int_t) nchrom, work, lwork, iwork, liwork, &info );
+#else
+                magma_ssyevd_gpu( MagmaVec, MagmaUpper, (magma_int_t) nchrom, kappa_d, (magma_int_t) nchrom,
+                                  w, wA, (magma_int_t) nchrom, work, lwork, iwork, liwork, &info );
 #endif
             }
-
-#ifndef USE_EULER   // if using Euler method for integration, we don't need to do these diagonalizations
-#ifdef USE_DOUBLES
-            magma_dsyevd_gpu( MagmaVec, MagmaUpper, (magma_int_t) nchrom, kappa_d, ldkappa,
-                              w, wA, ldkappa, work, lwork, iwork, liwork, &info );
-#else
-            magma_ssyevd_gpu( MagmaVec, MagmaUpper, (magma_int_t) nchrom, kappa_d, ldkappa,
-                              w, wA, ldkappa, work, lwork, iwork, liwork, &info );
-#endif
-#endif
-
 
             // ***          Done with the Diagonalization       *** //
             // ---------------------------------------------------- //
@@ -343,33 +342,28 @@ int main(int argc, char *argv[])
 
 
 
-
-
-
-
-
-
             // ---------------------------------------------------- //
             // ***              The Spectral Density            *** //
 
-            if ( frame == 0 ){
+            if ( frame == 0 && ispecd == 0)
+            {
 
                 // project the transition dipole moments onto the eigenbasis
                 // MU_d = kappa_d**T x mu_d 
 #ifdef USE_DOUBLES
                 magma_dgemv( MagmaTrans, (magma_int_t) nchrom, (magma_int_t) nchrom, 
-                             1.0, kappa_d, ldkappa, mux_d, 1, 0.0, MUX_d, 1, queue);
+                             1.0, kappa_d, (magma_int_t) nchrom , mux_d, 1, 0.0, MUX_d, 1, queue);
                 magma_dgemv( MagmaTrans, (magma_int_t) nchrom, (magma_int_t) nchrom, 
-                             1.0, kappa_d, ldkappa, muy_d, 1, 0.0, MUY_d, 1, queue);
+                             1.0, kappa_d, (magma_int_t) nchrom, muy_d, 1, 0.0, MUY_d, 1, queue);
                 magma_dgemv( MagmaTrans, (magma_int_t) nchrom, (magma_int_t) nchrom, 
-                             1.0, kappa_d, ldkappa, muz_d, 1, 0.0, MUZ_d, 1, queue);
+                             1.0, kappa_d, (magma_int_t) nchrom, muz_d, 1, 0.0, MUZ_d, 1, queue);
 #else
                 magma_sgemv( MagmaTrans, (magma_int_t) nchrom, (magma_int_t) nchrom, 
-                             1.0, kappa_d, ldkappa, mux_d, 1, 0.0, MUX_d, 1, queue);
+                             1.0, kappa_d, (magma_int_t) nchrom , mux_d, 1, 0.0, MUX_d, 1, queue);
                 magma_sgemv( MagmaTrans, (magma_int_t) nchrom, (magma_int_t) nchrom, 
-                             1.0, kappa_d, ldkappa, muy_d, 1, 0.0, MUY_d, 1, queue);
+                             1.0, kappa_d, (magma_int_t) nchrom, muy_d, 1, 0.0, MUY_d, 1, queue);
                 magma_sgemv( MagmaTrans, (magma_int_t) nchrom, (magma_int_t) nchrom, 
-                             1.0, kappa_d, ldkappa, muz_d, 1, 0.0, MUZ_d, 1, queue);
+                             1.0, kappa_d, (magma_int_t) nchrom, muz_d, 1, 0.0, MUZ_d, 1, queue);
 #endif
 
                 // Define the spectral range of interest and initialize spectral arrays
@@ -401,12 +395,7 @@ int main(int argc, char *argv[])
 
 
 
-
-
-
-
             // ---------------------------------------------------- //
-
             // ***           Time Correlation Function          *** //
 
             // cast variables to complex to calculate time correlation function (which is complex)
@@ -416,12 +405,13 @@ int main(int argc, char *argv[])
             cast_to_complex_GPU <<<numBlocks,blockSize>>> ( muz_d  , cmuz_d  , nchrom );
 
 
-
-
+            // ---------------------------------------------------- //
             // ***           Calculate the F matrix             *** //
+
             if ( frame == 0 )
             {
                 // initialize the F matrix at t=0 to the unit matrix
+                // TODO: Initialize on GPU memory and get rid of host F matrix
                 for ( int i = 0; i < nchrom; i ++ )
                 {
                     for ( int j = 0; j < nchrom; j ++ )
@@ -440,123 +430,174 @@ int main(int argc, char *argv[])
             }
             else
             {
-#ifdef USE_EULER
-                // Integrate F with 4th order Adams-Bashfort
-                // The kappa matrix is assumed to be time independent over this integration cycle of max_int_steps
-
-                // reset current order if at the begining of a sample
-                if ( frame == 1 ) order_counter = 1;
-
-                for ( int i=0; i<(int) max_int_steps; i++ )// take multiple steps
+                if ( ifintmeth == 0 )   // Integrate with exact diagonalization
                 {
-                    // find current dF/dt = iF(t+i)k(t)
-                    magma_cgemm( MagmaNoTrans, MagmaNoTrans, (magma_int_t) nchrom, (magma_int_t) nchrom, 
-                                (magma_int_t) nchrom, MAGMA_MAKE(0.0,1.0), F_d, nchrom, ckappa_d, nchrom,
-                                 MAGMA_ZERO, ctmpmat_d, nchrom, queue );
+                    // build the propigator
+                    // TODO, build on GPU and get rid of CPU array
+                    for ( int i = 0; i < nchrom; i++ )
+                    {
+                        // zero matrix
+                        for ( int j = 0; j < nchrom; j ++ )
+                        {
+                            prop[ i*nchrom + j] = MAGMA_ZERO;
+                        }
+                        // P = exp(iwt/hbar)
+                        arg   = w[i] * dt / HBAR;
+                        prop[ i*nchrom + i ] = MAGMA_MAKE( cos(arg), sin(arg) );
+                    }
 
-                    // For the first step use Euler since previous values are not available
-                    if ( order_counter == 1 )
-                    //if ( frame == 0 && i == 0 )
-                    {
-                        // save current value for later
-                        magma_ccopy( (magma_int_t) nchrom2, ctmpmat_d , 1, k1_d, 1, queue );
-                        magma_caxpy( (magma_int_t) nchrom2, MAGMA_MAKE(dt/HBAR/max_int_steps,0), k1_d, 1, F_d, 1, queue );
-                        order_counter = 2;
-
-                    }
-                    // use ADAMS bensforth two-step method for step 2
-                    else if ( order_counter == 2 )
-                    //else if ( frame == 0 && i == 1 )
-                    {
-                        // save current values for later
-                        magma_ccopy( (magma_int_t) nchrom2, ctmpmat_d , 1, k2_d, 1, queue );
-                        magma_caxpy( (magma_int_t) nchrom2, MAGMA_MAKE( 3.0/2.0*dt/HBAR/max_int_steps,0), k2_d, 1, F_d, 1, queue );
-                        magma_caxpy( (magma_int_t) nchrom2, MAGMA_MAKE(-1.0/2.0*dt/HBAR/max_int_steps,0), k1_d, 1, F_d, 1, queue );
-                        order_counter = 3;
-                    }
-                    // use ADAMS bensforth three-step method
-                    //else if ( frame == 0 && i == 2 )
-                    else if ( order_counter == 3 )
-                    {
-                        // save current values for later
-                        magma_ccopy( (magma_int_t) nchrom2, ctmpmat_d , 1, k3_d, 1, queue );
-                        magma_caxpy( (magma_int_t) nchrom2, MAGMA_MAKE(23.0/12.0*dt/HBAR/max_int_steps,0), k3_d, 1, F_d, 1, queue );
-                        magma_caxpy( (magma_int_t) nchrom2, MAGMA_MAKE(-4.0/3.0 *dt/HBAR/max_int_steps,0), k2_d, 1, F_d, 1, queue );
-                        magma_caxpy( (magma_int_t) nchrom2, MAGMA_MAKE(+5.0/12.0*dt/HBAR/max_int_steps,0), k1_d, 1, F_d, 1, queue );
-                        order_counter = 4;
-                    }
-                     // use ADAMS bensforth four-step method
-                    else
-                    {
-                        // save current values for later
-                        magma_ccopy( (magma_int_t) nchrom2, ctmpmat_d , 1, k4_d, 1, queue );
-                        magma_caxpy( (magma_int_t) nchrom2, MAGMA_MAKE( 55.0/24.0 *dt/HBAR/max_int_steps,0), k4_d, 1, F_d, 1, queue );
-                        magma_caxpy( (magma_int_t) nchrom2, MAGMA_MAKE(-59.0/24.0 *dt/HBAR/max_int_steps,0), k3_d, 1, F_d, 1, queue );
-                        magma_caxpy( (magma_int_t) nchrom2, MAGMA_MAKE( 37.0/24.0 *dt/HBAR/max_int_steps,0), k2_d, 1, F_d, 1, queue );
-                        magma_caxpy( (magma_int_t) nchrom2, MAGMA_MAKE(-3.0/8.0   *dt/HBAR/max_int_steps,0), k1_d, 1, F_d, 1, queue );
-                        // shuffle definitions for next iteration //
-                        magma_ccopy( (magma_int_t) nchrom2, k2_d, 1, k1_d, 1, queue );
-                        magma_ccopy( (magma_int_t) nchrom2, k3_d, 1, k2_d, 1, queue );
-                        magma_ccopy( (magma_int_t) nchrom2, k4_d, 1, k3_d, 1, queue );
-                    }
-                }
-#else          
-                // Exact method with diagonalization
-                // build the propigator
-                for ( int i = 0; i < nchrom; i++ )
-                {
-                    // zero matrix
-                    for ( int j = 0; j < nchrom; j ++ )
-                    {
-                        prop[ i*nchrom + j] = MAGMA_ZERO;
-                    }
-                    // P = exp(iwt/hbar)
-                    arg   = w[i] * dt / HBAR;
-                    prop[ i*nchrom + i ] = MAGMA_MAKE( cos(arg), sin(arg) );
-                }
-
-                // copy the propigator to the gpu and convert to the local basis
-                // 
-                cudaMemcpy( prop_d, prop, nchrom2*sizeof(user_complex_t), cudaMemcpyHostToDevice );
+                    // copy the propigator to the gpu and convert to the local basis
+                    cudaMemcpy( prop_d, prop, nchrom2*sizeof(user_complex_t), cudaMemcpyHostToDevice );
 
 #ifdef USE_DOUBLES
-                // ctmpmat_d = ckappa_d * prop_d
-                magma_zgemm( MagmaNoTrans, MagmaNoTrans, (magma_int_t) nchrom, (magma_int_t) nchrom, 
-                             (magma_int_t) nchrom, MAGMA_ONE, ckappa_d, ldkappa, prop_d, ldkappa,
-                              MAGMA_ZERO, ctmpmat_d, ldkappa, queue );
+                    // ctmpmat_d = ckappa_d * prop_d
+                    magma_zgemm( MagmaNoTrans, MagmaNoTrans, (magma_int_t) nchrom, (magma_int_t) nchrom, 
+                                 (magma_int_t) nchrom, MAGMA_ONE, ckappa_d, (magma_int_t) nchrom, prop_d, 
+                                 (magma_int_t) nchrom, MAGMA_ZERO, ctmpmat_d, (magma_int_t) nchrom, queue );
 
-                // prop_d = ctmpmat_d * ckappa_d **T 
-                magma_zgemm( MagmaNoTrans, MagmaTrans, (magma_int_t) nchrom, (magma_int_t) nchrom, 
-                             (magma_int_t) nchrom, MAGMA_ONE, ctmpmat_d, ldkappa, ckappa_d, ldkappa, 
-                             MAGMA_ZERO, prop_d, ldkappa, queue );
+                    // prop_d = ctmpmat_d * ckappa_d **T 
+                    magma_zgemm( MagmaNoTrans, MagmaTrans, (magma_int_t) nchrom, (magma_int_t) nchrom, 
+                                 (magma_int_t) nchrom, MAGMA_ONE, ctmpmat_d, (magma_int_t) nchrom, ckappa_d, 
+                                 (magma_int_t) nchrom, MAGMA_ZERO, prop_d, (magma_int_t) nchrom, queue );
 
-                // ctmpmat_d = prop_d * F
-                magma_zgemm( MagmaNoTrans, MagmaNoTrans, (magma_int_t) nchrom, (magma_int_t) nchrom, 
-                             (magma_int_t) nchrom, MAGMA_ONE, prop_d, ldkappa, F_d, ldkappa, 
-                             MAGMA_ZERO, ctmpmat_d, ldkappa, queue );
+                    // ctmpmat_d = prop_d * F
+                    magma_zgemm( MagmaNoTrans, MagmaNoTrans, (magma_int_t) nchrom, (magma_int_t) nchrom, 
+                                 (magma_int_t) nchrom, MAGMA_ONE, prop_d, (magma_int_t) nchrom, F_d, 
+                                 (magma_int_t) nchrom, MAGMA_ZERO, ctmpmat_d, (magma_int_t) nchrom, queue );
 
-                // copy the F matrix back from the temporary variable to F_d
-                magma_zcopy( (magma_int_t) nchrom2, ctmpmat_d , 1, F_d, 1, queue );
+                    // copy the F matrix back from the temporary variable to F_d
+                    magma_zcopy( (magma_int_t) nchrom2, ctmpmat_d , 1, F_d, 1, queue );
 #else
-                // ctmpmat_d = ckappa_d * prop_d
-                magma_cgemm( MagmaNoTrans, MagmaNoTrans, (magma_int_t) nchrom, (magma_int_t) nchrom, 
-                             (magma_int_t) nchrom, MAGMA_ONE, ckappa_d, ldkappa, prop_d, ldkappa,
-                              MAGMA_ZERO, ctmpmat_d, ldkappa, queue );
+                    // ctmpmat_d = ckappa_d * prop_d
+                    magma_cgemm( MagmaNoTrans, MagmaNoTrans, (magma_int_t) nchrom, (magma_int_t) nchrom, 
+                                 (magma_int_t) nchrom, MAGMA_ONE, ckappa_d, (magma_int_t) nchrom, prop_d, 
+                                 (magma_int_t) nchrom, MAGMA_ZERO, ctmpmat_d, (magma_int_t) nchrom, queue );
 
-                // prop_d = ctmpmat_d * ckappa_d **T 
-                magma_cgemm( MagmaNoTrans, MagmaTrans, (magma_int_t) nchrom, (magma_int_t) nchrom, 
-                             (magma_int_t) nchrom, MAGMA_ONE, ctmpmat_d, ldkappa, ckappa_d, ldkappa, 
-                             MAGMA_ZERO, prop_d, ldkappa, queue );
+                    // prop_d = ctmpmat_d * ckappa_d **T 
+                    magma_cgemm( MagmaNoTrans, MagmaTrans, (magma_int_t) nchrom, (magma_int_t) nchrom, 
+                                 (magma_int_t) nchrom, MAGMA_ONE, ctmpmat_d, (magma_int_t) nchrom, ckappa_d, 
+                                 (magma_int_t) nchrom, MAGMA_ZERO, prop_d, (magma_int_t) nchrom, queue );
 
-                // ctmpmat_d = prop_d * F
-                magma_cgemm( MagmaNoTrans, MagmaNoTrans, (magma_int_t) nchrom, (magma_int_t) nchrom, 
-                             (magma_int_t) nchrom, MAGMA_ONE, prop_d, ldkappa, F_d, ldkappa, 
-                             MAGMA_ZERO, ctmpmat_d, ldkappa, queue );
+                    // ctmpmat_d = prop_d * F
+                    magma_cgemm( MagmaNoTrans, MagmaNoTrans, (magma_int_t) nchrom, (magma_int_t) nchrom, 
+                                 (magma_int_t) nchrom, MAGMA_ONE, prop_d, (magma_int_t) nchrom, F_d, 
+                                 (magma_int_t) nchrom, MAGMA_ZERO, ctmpmat_d, (magma_int_t) nchrom, queue );
 
-                // copy the F matrix back from the temporary variable to F_d
-                magma_ccopy( (magma_int_t) nchrom2, ctmpmat_d , 1, F_d, 1, queue );
+                    // copy the F matrix back from the temporary variable to F_d
+                    magma_ccopy( (magma_int_t) nchrom2, ctmpmat_d , 1, F_d, 1, queue );
 #endif
+                }
+                else if ( ifintmeth == 1 ) // Integrate F with 4th order Adams-Bashfort
+                {                          // Note: The kappa matrix is assumed to be time independent over this integration cycle of max_int_steps
+                    // reset current order if at the begining of a sample
+                    if ( frame == 1 ) order_counter = 1;
+
+                    for ( int i=0; i<(int) max_int_steps; i++ )// take multiple steps
+                    {
+#ifdef USE_DOUBLES
+                        // find current dF/dt = iF(t+i)k(t)
+                        magma_zgemm( MagmaNoTrans, MagmaNoTrans, (magma_int_t) nchrom, (magma_int_t) nchrom, 
+                                    (magma_int_t) nchrom, MAGMA_MAKE(0.0,1.0), F_d, nchrom, ckappa_d, nchrom,
+                                     MAGMA_ZERO, ctmpmat_d, nchrom, queue );
+
+                        // For the first step use Euler since previous values are not available
+                        if ( order_counter == 1 )
+                        //if ( frame == 0 && i == 0 )
+                        {
+                            // save current value for later
+                            magma_zcopy( (magma_int_t) nchrom2, ctmpmat_d , 1, k1_d, 1, queue );
+                            magma_zaxpy( (magma_int_t) nchrom2, MAGMA_MAKE(dt/HBAR/max_int_steps,0), k1_d, 1, F_d, 1, queue );
+                            order_counter = 2;
+                        }
+                        // use ADAMS bensforth two-step method for step 2
+                        else if ( order_counter == 2 )
+                        //else if ( frame == 0 && i == 1 )
+                        {
+                            // save current values for later
+                            magma_zcopy( (magma_int_t) nchrom2, ctmpmat_d , 1, k2_d, 1, queue );
+                            magma_zaxpy( (magma_int_t) nchrom2, MAGMA_MAKE( 3.0/2.0*dt/HBAR/max_int_steps,0), k2_d, 1, F_d, 1, queue );
+                            magma_zaxpy( (magma_int_t) nchrom2, MAGMA_MAKE(-1.0/2.0*dt/HBAR/max_int_steps,0), k1_d, 1, F_d, 1, queue );
+                            order_counter = 3;
+                        }
+                        // use ADAMS bensforth three-step method
+                        //else if ( frame == 0 && i == 2 )
+                        else if ( order_counter == 3 )
+                        {
+                            // save current values for later
+                            magma_zcopy( (magma_int_t) nchrom2, ctmpmat_d , 1, k3_d, 1, queue );
+                            magma_zaxpy( (magma_int_t) nchrom2, MAGMA_MAKE(23.0/12.0*dt/HBAR/max_int_steps,0), k3_d, 1, F_d, 1, queue );
+                            magma_zaxpy( (magma_int_t) nchrom2, MAGMA_MAKE(-4.0/3.0 *dt/HBAR/max_int_steps,0), k2_d, 1, F_d, 1, queue );
+                            magma_zaxpy( (magma_int_t) nchrom2, MAGMA_MAKE( 5.0/12.0*dt/HBAR/max_int_steps,0), k1_d, 1, F_d, 1, queue );
+                            order_counter = 4;
+                        }
+                        // use ADAMS bensforth four-step method
+                        else
+                        {
+                            // save current values for later
+                            magma_zcopy( (magma_int_t) nchrom2, ctmpmat_d , 1, k4_d, 1, queue );
+                            magma_zaxpy( (magma_int_t) nchrom2, MAGMA_MAKE( 55.0/24.0 *dt/HBAR/max_int_steps,0), k4_d, 1, F_d, 1, queue );
+                            magma_zaxpy( (magma_int_t) nchrom2, MAGMA_MAKE(-59.0/24.0 *dt/HBAR/max_int_steps,0), k3_d, 1, F_d, 1, queue );
+                            magma_zaxpy( (magma_int_t) nchrom2, MAGMA_MAKE( 37.0/24.0 *dt/HBAR/max_int_steps,0), k2_d, 1, F_d, 1, queue );
+                            magma_zaxpy( (magma_int_t) nchrom2, MAGMA_MAKE(-3.0/8.0   *dt/HBAR/max_int_steps,0), k1_d, 1, F_d, 1, queue );
+                            // shuffle definitions for next iteration //
+                            magma_zcopy( (magma_int_t) nchrom2, k2_d, 1, k1_d, 1, queue );
+                            magma_zcopy( (magma_int_t) nchrom2, k3_d, 1, k2_d, 1, queue );
+                            magma_zcopy( (magma_int_t) nchrom2, k4_d, 1, k3_d, 1, queue );
+                        }
+
+#else
+                        // find current dF/dt = iF(t+i)k(t)
+                        magma_cgemm( MagmaNoTrans, MagmaNoTrans, (magma_int_t) nchrom, (magma_int_t) nchrom, 
+                                    (magma_int_t) nchrom, MAGMA_MAKE(0.0,1.0), F_d, nchrom, ckappa_d, nchrom,
+                                     MAGMA_ZERO, ctmpmat_d, nchrom, queue );
+
+                        // For the first step use Euler since previous values are not available
+                        if ( order_counter == 1 )
+                        //if ( frame == 0 && i == 0 )
+                        {
+                            // save current value for later
+                            magma_ccopy( (magma_int_t) nchrom2, ctmpmat_d , 1, k1_d, 1, queue );
+                            magma_caxpy( (magma_int_t) nchrom2, MAGMA_MAKE(dt/HBAR/max_int_steps,0), k1_d, 1, F_d, 1, queue );
+                            order_counter = 2;
+                        }
+                        // use ADAMS bensforth two-step method for step 2
+                        else if ( order_counter == 2 )
+                        //else if ( frame == 0 && i == 1 )
+                        {
+                            // save current values for later
+                            magma_ccopy( (magma_int_t) nchrom2, ctmpmat_d , 1, k2_d, 1, queue );
+                            magma_caxpy( (magma_int_t) nchrom2, MAGMA_MAKE( 3.0/2.0*dt/HBAR/max_int_steps,0), k2_d, 1, F_d, 1, queue );
+                            magma_caxpy( (magma_int_t) nchrom2, MAGMA_MAKE(-1.0/2.0*dt/HBAR/max_int_steps,0), k1_d, 1, F_d, 1, queue );
+                            order_counter = 3;
+                        }
+                        // use ADAMS bensforth three-step method
+                        //else if ( frame == 0 && i == 2 )
+                        else if ( order_counter == 3 )
+                        {
+                            // save current values for later
+                            magma_ccopy( (magma_int_t) nchrom2, ctmpmat_d , 1, k3_d, 1, queue );
+                            magma_caxpy( (magma_int_t) nchrom2, MAGMA_MAKE(23.0/12.0*dt/HBAR/max_int_steps,0), k3_d, 1, F_d, 1, queue );
+                            magma_caxpy( (magma_int_t) nchrom2, MAGMA_MAKE(-4.0/3.0 *dt/HBAR/max_int_steps,0), k2_d, 1, F_d, 1, queue );
+                            magma_caxpy( (magma_int_t) nchrom2, MAGMA_MAKE( 5.0/12.0*dt/HBAR/max_int_steps,0), k1_d, 1, F_d, 1, queue );
+                            order_counter = 4;
+                        }
+                        // use ADAMS bensforth four-step method
+                        else
+                        {
+                            // save current values for later
+                            magma_ccopy( (magma_int_t) nchrom2, ctmpmat_d , 1, k4_d, 1, queue );
+                            magma_caxpy( (magma_int_t) nchrom2, MAGMA_MAKE( 55.0/24.0 *dt/HBAR/max_int_steps,0), k4_d, 1, F_d, 1, queue );
+                            magma_caxpy( (magma_int_t) nchrom2, MAGMA_MAKE(-59.0/24.0 *dt/HBAR/max_int_steps,0), k3_d, 1, F_d, 1, queue );
+                            magma_caxpy( (magma_int_t) nchrom2, MAGMA_MAKE( 37.0/24.0 *dt/HBAR/max_int_steps,0), k2_d, 1, F_d, 1, queue );
+                            magma_caxpy( (magma_int_t) nchrom2, MAGMA_MAKE(-3.0/8.0   *dt/HBAR/max_int_steps,0), k1_d, 1, F_d, 1, queue );
+                            // shuffle definitions for next iteration //
+                            magma_ccopy( (magma_int_t) nchrom2, k2_d, 1, k1_d, 1, queue );
+                            magma_ccopy( (magma_int_t) nchrom2, k3_d, 1, k2_d, 1, queue );
+                            magma_ccopy( (magma_int_t) nchrom2, k4_d, 1, k3_d, 1, queue );
+                        }
 #endif
+                    }
+                }
             }
             // ***           Done updating the F matrix         *** //
 
@@ -565,32 +606,32 @@ int main(int argc, char *argv[])
             // tcfx = cmux0_d**T * F_d *cmux_d
 #ifdef USE_DOUBLES
             // x
-            magma_zgemv( MagmaNoTrans, (magma_int_t) nchrom, (magma_int_t) nchrom, MAGMA_ONE, F_d, ldkappa,
+            magma_zgemv( MagmaNoTrans, (magma_int_t) nchrom, (magma_int_t) nchrom, MAGMA_ONE, F_d, (magma_int_t) nchrom,
                          cmux0_d, 1, MAGMA_ZERO, tmpmu_d, 1, queue);
             tcfx = magma_zdotu( (magma_int_t) nchrom, cmux_d, 1, tmpmu_d, 1, queue );
 
             // y
-            magma_zgemv( MagmaNoTrans, (magma_int_t) nchrom, (magma_int_t) nchrom, MAGMA_ONE, F_d, ldkappa,
+            magma_zgemv( MagmaNoTrans, (magma_int_t) nchrom, (magma_int_t) nchrom, MAGMA_ONE, F_d, (magma_int_t) nchrom,
                          cmuy0_d, 1, MAGMA_ZERO, tmpmu_d, 1, queue);
             tcfy = magma_zdotu( (magma_int_t) nchrom, cmuy_d, 1, tmpmu_d, 1, queue );
 
             // z
-            magma_zgemv( MagmaNoTrans, (magma_int_t) nchrom, (magma_int_t) nchrom, MAGMA_ONE, F_d, ldkappa,
+            magma_zgemv( MagmaNoTrans, (magma_int_t) nchrom, (magma_int_t) nchrom, MAGMA_ONE, F_d, (magma_int_t) nchrom,
                          cmuz0_d, 1, MAGMA_ZERO, tmpmu_d, 1, queue);
             tcfz = magma_zdotu( (magma_int_t) nchrom, cmuz_d, 1, tmpmu_d, 1, queue );
 #else
             // x
-            magma_cgemv( MagmaNoTrans, (magma_int_t) nchrom, (magma_int_t) nchrom, MAGMA_C_ONE, F_d, ldkappa,
+            magma_cgemv( MagmaNoTrans, (magma_int_t) nchrom, (magma_int_t) nchrom, MAGMA_C_ONE, F_d, (magma_int_t) nchrom,
                          cmux0_d, 1, MAGMA_C_ZERO, tmpmu_d, 1, queue);
             tcfx = magma_cdotu( (magma_int_t) nchrom, cmux_d, 1, tmpmu_d, 1, queue );
 
             // y
-            magma_cgemv( MagmaNoTrans, (magma_int_t) nchrom, (magma_int_t) nchrom, MAGMA_C_ONE, F_d, ldkappa,
+            magma_cgemv( MagmaNoTrans, (magma_int_t) nchrom, (magma_int_t) nchrom, MAGMA_C_ONE, F_d, (magma_int_t) nchrom,
                          cmuy0_d, 1, MAGMA_C_ZERO, tmpmu_d, 1, queue);
             tcfy = magma_cdotu( (magma_int_t) nchrom, cmuy_d, 1, tmpmu_d, 1, queue );
 
             // z
-            magma_cgemv( MagmaNoTrans, (magma_int_t) nchrom, (magma_int_t) nchrom, MAGMA_C_ONE, F_d, ldkappa,
+            magma_cgemv( MagmaNoTrans, (magma_int_t) nchrom, (magma_int_t) nchrom, MAGMA_C_ONE, F_d, (magma_int_t) nchrom,
                          cmuz0_d, 1, MAGMA_C_ZERO, tmpmu_d, 1, queue);
             tcfz = magma_cdotu( (magma_int_t) nchrom, cmuz_d, 1, tmpmu_d, 1, queue );
 #endif
@@ -614,7 +655,7 @@ int main(int argc, char *argv[])
 
         }
 
-        // copy time correlation function to persistant memory to calculate average spectrum
+        // copy time correlation function to persistant variable to calculate average spectrum
         for ( int i = 0; i < ntcfpoints; i ++ )
         {
             tcf[i]  = MAGMA_ADD( tcf[i] , tmptcf[i]);
@@ -624,6 +665,7 @@ int main(int argc, char *argv[])
         currentSample +=1;
         }
     } // end outer loop
+
 
     printf("\n\n----------------------------------------------------------\n");
     printf("Finishing up...\n");
@@ -644,14 +686,13 @@ int main(int argc, char *argv[])
         pdtcf[i+ntcfpoints] = MAGMA_ZERO;
     }
 
+    cudaMalloc( &pdtcf_d  , (ntcfpoints+nzeros)*sizeof(user_complex_t));
+    cudaMemcpy( pdtcf_d, pdtcf, (ntcfpoints+nzeros)*sizeof(user_complex_t), cudaMemcpyHostToDevice );
+
 #ifdef USE_DOUBLES
-    magma_zmalloc( &pdtcf_d    , ntcfpoints+nzeros);
-    cudaMemcpy   ( pdtcf_d, pdtcf, (ntcfpoints+nzeros)*sizeof(user_complex_t), cudaMemcpyHostToDevice );
     cufftPlan1d  ( &plan, ntcfpoints+nzeros, CUFFT_Z2D, 1);
     cufftExecZ2D ( plan, pdtcf_d, Ftcf_d );
 #else
-    magma_cmalloc( &pdtcf_d    , ntcfpoints+nzeros);
-    cudaMemcpy   ( pdtcf_d, pdtcf, (ntcfpoints+nzeros)*sizeof(user_complex_t), cudaMemcpyHostToDevice );
     cufftPlan1d  ( &plan, ntcfpoints+nzeros, CUFFT_C2R, 1);
     cufftExecC2R ( plan, pdtcf_d, Ftcf_d );
 #endif
@@ -664,9 +705,12 @@ int main(int argc, char *argv[])
     {
         Ftcf[i] = Ftcf[i] ;/// (user_real_t) nsamples; 
     }
-    for ( int i = 0; i < nomega; i++)
+    if ( ispecd == 0 )
     {
-        Sw[i]   = Sw[i] / (user_real_t) nsamples;
+        for ( int i = 0; i < nomega; i++)
+        {
+            Sw[i]   = Sw[i] / (user_real_t) nsamples;
+        }
     }
 
     // set base name for output files
@@ -685,12 +729,15 @@ int main(int argc, char *argv[])
     fclose( itcf );
 
     // write the spectral density to file
-    FILE *spec_density = fopen(strcat(strcpy(fname,outf),"spdn.dat"), "w");
-    for ( int i = 0; i < nomega; i++)
+    if ( ispecd == 0 )
     {
-        fprintf(spec_density, "%g %g\n", omega[i], Sw[i]);
+        FILE *spec_density = fopen(strcat(strcpy(fname,outf),"spdn.dat"), "w");
+        for ( int i = 0; i < nomega; i++)
+        {
+            fprintf(spec_density, "%g %g\n", omega[i], Sw[i]);
+        }
+        fclose(spec_density);
     }
-    fclose(spec_density);
 
     // Write the absorption lineshape... Since the C2R transform is inverse by default, the frequencies have to be negated
     // note if you need to compare with YICUN's code, divide Ftcf by 2
@@ -716,27 +763,20 @@ int main(int argc, char *argv[])
     magma_queue_destroy( queue );
 
     free(x);
-    free(omega);
-    free(Sw);
-    free(tmpSw);
     free(time2);
     free(Ftcf);
-    free(tmpFtcf);
     free(tcf);
     free(F);
-    free(prop);
     free(pdtcf);
+        
 
     cudaFree(x_d);
+    cudaFree(Ftcf_d);
     cudaFree(mux_d); 
     cudaFree(muy_d);
     cudaFree(muz_d);
-    cudaFree(MUX_d); 
-    cudaFree(MUY_d);
-    cudaFree(MUZ_d);
-    cudaFree(omega_d);
-    cudaFree(Sw_d);
-    cudaFree(Ftcf_d);
+    cudaFree(eproj_d);
+    cudaFree(kappa_d);
     cudaFree(cmux_d); 
     cudaFree(cmuy_d);
     cudaFree(cmuz_d);
@@ -744,27 +784,55 @@ int main(int argc, char *argv[])
     cudaFree(cmuy0_d);
     cudaFree(cmuz0_d);
     cudaFree(tmpmu_d);
- 
-    magma_free(eproj_d);
-    magma_free(kappa_d);
-    magma_free(ckappa_d);
-    magma_free(F_d);
-    magma_free(prop_d);
-    magma_free(ctmpmat_d);
-#ifdef USE_EULER
-    magma_free(k1_d);
-    magma_free(k2_d);
-    magma_free(k3_d);
-    magma_free(k4_d);
-#endif
-    magma_free(w_d);
-    magma_free(tcf_d);
+    cudaFree(ckappa_d); 
+    cudaFree(F_d);
+    cudaFree(ctmpmat_d);
+    cudaFree(tcf_d);
+
     magma_free(pdtcf_d);
 
-    magma_free_cpu(w);
-    magma_free_cpu(iwork);
-    magma_free_pinned( work );
-    magma_free_pinned( wA );
+
+    // free memory used for diagonalization
+    if ( ispecd == 0 || ifintmeth == 0 )
+    {
+        free(w);
+        free(iwork);
+        magma_free_pinned( work );
+        magma_free_pinned( wA );
+    }
+
+    // free memory used in spectral density calculation
+    if ( ispecd == 0 ) // only used if the spetral density is calculated
+    {
+        // CPU arrays
+        free(omega);
+        free(Sw);
+        free(tmpSw);
+
+        // GPU arrays
+        cudaFree(MUX_d); 
+        cudaFree(MUY_d);
+        cudaFree(MUZ_d);
+        cudaFree(omega_d);
+        cudaFree(Sw_d);
+        cudaFree(w_d);
+    }
+ 
+    // free memory for integration of F depending on which method is used
+    if ( ifintmeth == 0 ) // only used for the exact integration method
+    {
+        free(prop);
+        cudaFree(prop_d);
+    }
+    else if ( ifintmeth == 1 ) // only used for adams integration method
+    {
+        cudaFree(k1_d);
+        cudaFree(k2_d);
+        cudaFree(k3_d);
+        cudaFree(k4_d);
+    }
+
+
 
     // final call to finalize magma math library
     magma_finalize();
@@ -1189,26 +1257,14 @@ void cast_to_complex_GPU ( user_real_t *d_d, user_complex_t *z_d, magma_int_t n 
     }
 }
 
-
-
-
 // parse input file to setup calculation
-void ir_init( char *argv[], char gmxf[], char outf[], char model[], user_real_t *dt, int *ntcfpoints, int *nsamples, int *sampleEvery,
-              user_real_t *t1, user_real_t *avef, int *omegaStart, int *omegaStop, int *omegaStep, int *natom_mol, 
-              int *nchrom_mol, int *nzeros, user_real_t *beginTime  )
+void ir_init( char *argv[], char gmxf[], char outf[], char model[], int *ifintmeth, user_real_t *dt, int *ntcfpoints, 
+              int *nsamples, int *sampleEvery, user_real_t *t1, user_real_t *avef, int *omegaStart, int *omegaStop, 
+              int *omegaStep, int *natom_mol, int *nchrom_mol, int *nzeros, user_real_t *beginTime, int *ispecd,
+              user_real_t *max_int_steps)
 {
     char                para[MAX_STR_LEN];
     char                value[MAX_STR_LEN];
-
-
-    // Some useful variables and constants
-    /*
-    int                 natoms, nmol, frame, nchrom;
-    magma_int_t         nchrom2;
-    const int           ntcfpointsR     = (nzeros + ntcfpoints - 1)*2;                  // number of points for the real fourier transform
-    const int           nomega          = ( omegaStop - omegaStart ) / omegaStep + 1;   // number of frequencies for the spectral density
-    int                 currentSample   = 0;                                            // current sample
-    */
 
     FILE *inpf = fopen(argv[1],"r");
     if ( inpf == NULL )
@@ -1241,6 +1297,12 @@ void ir_init( char *argv[], char gmxf[], char outf[], char model[], user_real_t 
             {
                 printf("\tThe OM distance will be adjusted to that of TIP4P for the efield calculation\n");
             }
+        }
+        else if ( strcmp(para,"fintmeth") == 0 )
+        {
+            sscanf( value, "%d", (int *) ifintmeth );
+            if ( *ifintmeth < 0 || *ifintmeth > 1 ) *ifintmeth = 0;
+            printf("\tSetting F integration method to %d\n", (int ) *ifintmeth);
         }
         else if ( strcmp(para,"dt") == 0 )
         {
@@ -1306,6 +1368,23 @@ void ir_init( char *argv[], char gmxf[], char outf[], char model[], user_real_t 
         {
             sscanf( value, "%f", (float *) beginTime );
             printf("\tSetting equilibration time to %f (ps)\n", (float) *beginTime );
+        }
+        else if ( strcmp(para,"max_int_steps") == 0 )
+        {
+            sscanf( value, "%f", (float *) max_int_steps);
+            printf("\tSetting max_int_steps to %d\n", (int) *max_int_steps );
+        }
+        else if ( strcmp(para,"specd") == 0 )
+        {
+            sscanf( value, "%d", (int *) ispecd);
+            if ( ispecd == 0 )
+            {
+                printf("\tWill calculate the spectral density\n");
+            }
+            else
+            {
+                printf("\tWill not calculate the spectral density\n");
+            }
         }
         else
         {

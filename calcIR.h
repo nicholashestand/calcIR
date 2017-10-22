@@ -50,7 +50,6 @@ __global__
 void get_kappa_GPU( rvec *x, float boxl, int natoms, int natom_mol, int nchrom, int nchrom_mol, int nmol, user_real_t *eproj,
                     user_real_t *kappa, user_real_t *mux, user_real_t *muy, user_real_t *muz, user_real_t avef);
 
-
 __global__
 void get_spectral_density( user_real_t *w, user_real_t *MUX, user_real_t *MUY, user_real_t *MUZ, user_real_t *omega, user_real_t *Sw,
                            int nomega, int nchrom, user_real_t t1 );
@@ -72,9 +71,10 @@ __host__ __device__
 user_real_t dot3( user_real_t x[3], user_real_t y[3] );
 
 
-void ir_init( char *argv[], char gmxf[], char outf[], char model[], user_real_t *dt, int *ntcfpoints, int *nsamples, int *sampleEvery,
-              user_real_t *t1, user_real_t *avef, int *omegaStart, int *omegaStop, int *omegaStep, int *natom_mol, 
-              int *nchrom_mol, int *nzeros, user_real_t *beginTime );
+void ir_init( char *argv[], char gmxf[], char outf[], char model[], int *ifintmeth, user_real_t *dt, int *ntcfpoints, 
+              int *nsamples, int *sampleEvery, user_real_t *t1, user_real_t *avef, int *omegaStart, int *omegaStop, 
+              int *omegaStep, int *natom_mol, int *nchrom_mol, int *nzeros, user_real_t *beginTime, int *ispecd,
+              user_real_t *max_int_steps);
 
 
 void printProgress( int currentStep, int totalSteps );
