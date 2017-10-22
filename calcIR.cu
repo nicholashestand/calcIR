@@ -1304,11 +1304,6 @@ void ir_init( char *argv[], char gmxf[], char outf[], char model[], int *ifintme
             if ( *ifintmeth < 0 || *ifintmeth > 1 ) *ifintmeth = 0;
             printf("\tSetting F integration method to %d\n", (int ) *ifintmeth);
         }
-        else if ( strcmp(para,"dt") == 0 )
-        {
-            sscanf( value, "%f", (float *) dt );
-            printf("\tSettting dt to %f\n", (float) *dt);
-        }
         else if ( strcmp(para,"ntcfpoints") == 0 )
         {
             sscanf( value, "%d", (int *) ntcfpoints );
@@ -1323,16 +1318,6 @@ void ir_init( char *argv[], char gmxf[], char outf[], char model[], int *ifintme
         {
             sscanf( value, "%d", (int *) sampleEvery );
             printf("\tSetting sampleEvery to %d (ps)\n", (int) *sampleEvery);
-        }
-        else if ( strcmp(para,"t1") == 0 )
-        {
-            sscanf( value, "%f", (float *) t1 );
-            printf("\tSetting t1 to %f (ps)\n", (float) *t1);
-        }
-        else if ( strcmp(para,"avef") == 0 )
-        {
-            sscanf( value, "%f", (float *) avef );
-            printf("\tSetting avef to %f\n", (float) *avef);
         }
         else if ( strcmp(para,"omegaStart") == 0 )
         {
@@ -1364,16 +1349,6 @@ void ir_init( char *argv[], char gmxf[], char outf[], char model[], int *ifintme
             sscanf( value, "%d", (int *) nzeros );
             printf("\tSetting nzeros to %d\n", (int) *nzeros);
         }
-        else if ( strcmp(para,"beginTime") == 0 )
-        {
-            sscanf( value, "%f", (float *) beginTime );
-            printf("\tSetting equilibration time to %f (ps)\n", (float) *beginTime );
-        }
-        else if ( strcmp(para,"max_int_steps") == 0 )
-        {
-            sscanf( value, "%f", (float *) max_int_steps);
-            printf("\tSetting max_int_steps to %d\n", (int) *max_int_steps );
-        }
         else if ( strcmp(para,"specd") == 0 )
         {
             sscanf( value, "%d", (int *) ispecd);
@@ -1386,6 +1361,59 @@ void ir_init( char *argv[], char gmxf[], char outf[], char model[], int *ifintme
                 printf("\tWill not calculate the spectral density\n");
             }
         }
+#ifdef USE_DOUBLES
+        else if ( strcmp(para,"dt") == 0 )
+        {
+            sscanf( value, "%lf", dt );
+            printf("\tSettting dt to %lf\n", *dt);
+        }
+        else if ( strcmp(para,"t1") == 0 )
+        {
+            sscanf( value, "%lf", t1 );
+            printf("\tSetting t1 to %lf (ps)\n", *t1);
+        }
+        else if ( strcmp(para,"avef") == 0 )
+        {
+            sscanf( value, "%lf", avef );
+            printf("\tSetting avef to %lf\n", *avef);
+        }
+        else if ( strcmp(para,"beginTime") == 0 )
+        {
+            sscanf( value, "%lf", beginTime );
+            printf("\tSetting equilibration time to %lf (ps)\n", *beginTime );
+        }
+        else if ( strcmp(para,"max_int_steps") == 0 )
+        {
+            sscanf( value, "%lf", max_int_steps);
+            printf("\tSetting max_int_steps to %lf\n", *max_int_steps );
+        }
+#else
+        else if ( strcmp(para,"dt") == 0 )
+        {
+            sscanf( value, "%f", dt );
+            printf("\tSettting dt to %f\n", *dt);
+        }
+        else if ( strcmp(para,"t1") == 0 )
+        {
+            sscanf( value, "%f", t1 );
+            printf("\tSetting t1 to %f (ps)\n", *t1);
+        }
+        else if ( strcmp(para,"avef") == 0 )
+        {
+            sscanf( value, "%f", avef );
+            printf("\tSetting avef to %f\n", *avef);
+        }
+        else if ( strcmp(para,"beginTime") == 0 )
+        {
+            sscanf( value, "%f", beginTime );
+            printf("\tSetting equilibration time to %f (ps)\n", *beginTime );
+        }
+        else if ( strcmp(para,"max_int_steps") == 0 )
+        {
+            sscanf( value, "%f", max_int_steps);
+            printf("\tSetting max_int_steps to %f\n", *max_int_steps );
+        }
+#endif
         else
         {
             printf("WARNING: Parameter %s in input file %s not recognized, ignoring.\n", para, argv[1]);
