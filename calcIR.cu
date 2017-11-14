@@ -11,6 +11,7 @@
 #include "calcIR.h" 
 #include <complex.h>
 #include <time.h>
+#include <unistd.h>
 
 #include "magma_v2.h"
 #include <cufft.h>
@@ -27,6 +28,8 @@ int main(int argc, char *argv[])
     strncpy( gmxf, "n216/traj_comp.xtc", MAX_STR_LEN );                   // trajectory file
     char          outf[MAX_STR_LEN]; 
     strncpy( outf, " ", MAX_STR_LEN );                                    // name for output files
+    char          cptf[MAX_STR_LEN]; 
+    strncpy( cptf, " ", MAX_STR_LEN );                                    // name for output files
     char          model[MAX_STR_LEN];
     strncpy( model, "tip4p", MAX_STR_LEN );
     int           imodel        = 0;
@@ -52,7 +55,7 @@ int main(int argc, char *argv[])
 
  
     // get user input parameters
-    ir_init( argv, gmxf, outf, model, &ifintmeth, &dt, &ntcfpoints, &nsamples, &sampleEvery, &t1, 
+    ir_init( argv, gmxf, cptf, outf, model, &ifintmeth, &dt, &ntcfpoints, &nsamples, &sampleEvery, &t1, 
              &avef, &omegaStart, &omegaStop, &omegaStep, &natom_mol, &nchrom_mol, &nzeros, &beginTime,
              &ispecd, &max_int_steps);
 
@@ -98,6 +101,7 @@ int main(int argc, char *argv[])
     user_real_t         *work;                                                          // Work array
     user_real_t         *w   ;                                                          // Eigenvalues
     user_real_t         *wA  ;                                                          // Work array
+    int                 SSYEVR_ALLOC_FLAG = 1;
 
     // magma variables for gemv
     magma_queue_t       queue;
@@ -112,7 +116,7 @@ int main(int argc, char *argv[])
     user_complex_t      *F, *F_d;                                                       // F matrix on CPU and GPU
     user_complex_t      *prop, *prop_d;                                                 // Propigator matrix on CPU and GPU
     user_complex_t      *ctmpmat_d;                                                     // temporary complex matrix for matrix multiplications on gpu
-    user_complex_t      *ckappa_d;                                                      // A complex version of kappa // TODO: CAN WE JUST CAST AS TYPE INSTEAD OF HAVING VARIABLES FOR THIS?
+    user_complex_t      *ckappa_d;                                                      // A complex version of kappa
     user_complex_t      tcfx, tcfy, tcfz;                                               // Time correlation function, polarized
     user_complex_t      dcy, tcftmp;                                                    // Decay constant and a temporary variable for the tcf
     user_complex_t      *pdtcf, *pdtcf_d;                                               // padded time correlation functions
@@ -234,6 +238,10 @@ int main(int argc, char *argv[])
     // **************************************************** //
     
 
+    // ***          Check for Checkpoint File           *** //
+    // **************************************************** //
+    checkpoint( cptf, &currentSample, tcf, ntcfpoints, Sw, omega, nomega, CP_R );
+    // **************************************************** //
 
 
 
@@ -259,6 +267,7 @@ int main(int argc, char *argv[])
         if ( currentSample * sampleEvery + (int) beginTime == (int) gmxtime )
         {
             printf("\n    Now processing sample %d/%d starting at %.2f ps\n", currentSample + 1, nsamples, gmxtime );
+            fflush(stdout);
 
 
         // **************************************************** //
@@ -296,14 +305,13 @@ int main(int argc, char *argv[])
             // ---------------------------------------------------- //
             // ***          Diagonalize the Hamiltonian         *** //
 
-
             // Note that kappa only needs to be diagonalized if the exact integration method is requested or the spectral density
             if ( ifintmeth == 0 || ispecd == 0 )
             {
 
 
                 // if the first time, query for optimal workspace dimensions
-                if ( frame == 0 && currentSample == 0 )
+                if ( SSYEVR_ALLOC_FLAG )
                 {
 #ifdef USE_DOUBLES
                     magma_dsyevd_gpu( MagmaVec, MagmaUpper, (magma_int_t) nchrom, NULL, (magma_int_t) nchrom, 
@@ -325,6 +333,7 @@ int main(int argc, char *argv[])
                     magma_smalloc_pinned( &wA , nchrom2 );
                     magma_smalloc_pinned( &work , lwork  );
 #endif
+                    SSYEVR_ALLOC_FLAG = 0;// is allocated, so we won't need to do it again
                 }
 
 #ifdef USE_DOUBLES
@@ -338,7 +347,6 @@ int main(int argc, char *argv[])
 
             // ***          Done with the Diagonalization       *** //
             // ---------------------------------------------------- //
-
 
 
 
@@ -663,6 +671,9 @@ int main(int argc, char *argv[])
 
         // done with current sample, move to next
         currentSample +=1;
+
+        // checkpoint the simulation
+        checkpoint( cptf, &currentSample, tcf, ntcfpoints, Sw, omega, nomega, CP_W );
         }
     } // end outer loop
 
@@ -793,7 +804,7 @@ int main(int argc, char *argv[])
 
 
     // free memory used for diagonalization
-    if ( ispecd == 0 || ifintmeth == 0 )
+    if ( SSYEVR_ALLOC_FLAG == 0 )
     {
         free(w);
         free(iwork);
@@ -1258,7 +1269,7 @@ void cast_to_complex_GPU ( user_real_t *d_d, user_complex_t *z_d, magma_int_t n 
 }
 
 // parse input file to setup calculation
-void ir_init( char *argv[], char gmxf[], char outf[], char model[], int *ifintmeth, user_real_t *dt, int *ntcfpoints, 
+void ir_init( char *argv[], char gmxf[], char cptf[], char outf[], char model[], int *ifintmeth, user_real_t *dt, int *ntcfpoints, 
               int *nsamples, int *sampleEvery, user_real_t *t1, user_real_t *avef, int *omegaStart, int *omegaStop, 
               int *omegaStep, int *natom_mol, int *nchrom_mol, int *nzeros, user_real_t *beginTime, int *ispecd,
               user_real_t *max_int_steps)
@@ -1287,6 +1298,11 @@ void ir_init( char *argv[], char gmxf[], char outf[], char model[], int *ifintme
         {
             sscanf( value, "%s", outf );
             printf("\tSetting default file name to %s\n", outf);
+        }
+        else if ( strcmp(para,"cptf") == 0 ) 
+        {
+            sscanf( value, "%s", cptf );
+            printf("\tSetting cpt file %s\n", cptf );
         }
         else if ( strcmp(para,"model") == 0 )
         {
@@ -1364,7 +1380,7 @@ void ir_init( char *argv[], char gmxf[], char outf[], char model[], int *ifintme
         else if ( strcmp(para,"dt") == 0 )
         {
             sscanf( value, "%lf", dt );
-            printf("\tSettting dt to %lf\n", *dt);
+            printf("\tSetting dt to %lf\n", *dt);
         }
         else if ( strcmp(para,"t1") == 0 )
         {
@@ -1390,7 +1406,7 @@ void ir_init( char *argv[], char gmxf[], char outf[], char model[], int *ifintme
         else if ( strcmp(para,"dt") == 0 )
         {
             sscanf( value, "%f", dt );
-            printf("\tSettting dt to %f\n", *dt);
+            printf("\tSetting dt to %f\n", *dt);
         }
         else if ( strcmp(para,"t1") == 0 )
         {
@@ -1425,6 +1441,7 @@ void ir_init( char *argv[], char gmxf[], char outf[], char model[], int *ifintme
 }
 
 
+
 // Progress bar to keep updated on tcf
 void printProgress( int currentStep, int totalSteps )
 {
@@ -1432,4 +1449,56 @@ void printProgress( int currentStep, int totalSteps )
     int lpad = (int) (percentage*PWID);
     int rpad = PWID - lpad;
     fprintf(stderr, "\r [%.*s%*s]%3d%%", lpad, PSTR, rpad, "",(int) (percentage*100));
+}
+
+
+
+// Checkpoint the simulation
+void checkpoint( char cptf[], int *currentSample, user_complex_t *tcf, int ntcfpoints, user_real_t *Sw, user_real_t *omega, int nomega, int RW_FLAG )
+{
+
+    FILE *cptfp;
+    char bakf[MAX_STR_LEN];
+ 
+
+    // TODO: WRITE ALL PARAMETERS -- then check that these match the provided input file
+
+    // Writing
+    if ( RW_FLAG == 0 )
+    {
+        // if cpt file exists, back it up before proceeding
+        sprintf(bakf,"%s.bak",cptf);
+        if( access( cptf, F_OK ) != -1 ) rename( cptf, bakf );
+
+        // back up calculation
+        cptfp = fopen(cptf, "wb");
+        fwrite( currentSample, sizeof(int), 1, cptfp ); // current sample number
+        fwrite( tcf, sizeof(user_complex_t), ntcfpoints, cptfp ); // current time correlation function
+        fwrite( Sw,  sizeof(user_real_t),    nomega    , cptfp ); // current spectral density
+        fwrite( omega,  sizeof(user_real_t),    nomega    , cptfp ); // current spectral density frequencies
+
+
+        // close the file
+        fclose(cptfp);
+    }
+    // Reading
+    else
+    {
+        // if cpt file exists, read it and restart calculation
+        if( access( cptf, F_OK ) != -1 ) 
+        {
+            cptfp = fopen(cptf,"rb");
+            fread(currentSample, sizeof(int), 1, cptfp );
+            fread( tcf,sizeof(user_complex_t), ntcfpoints, cptfp );
+            fread( Sw, sizeof(user_real_t)   , nomega    , cptfp );
+            fread( omega, sizeof(user_real_t), nomega    , cptfp );
+            printf(">>> Read checkpoint file %s, restarting from sample %d.\n", cptf, *currentSample+1);
+            // close the file
+            fclose(cptfp);
+        }
+        else
+        {
+            printf(">>> No cpt file found (looking for %s). Starting from sample 1.\n", cptf);
+        }
+    }
 }

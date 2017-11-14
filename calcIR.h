@@ -39,6 +39,8 @@ typedef magmaFloatComplex user_complex_t;
 #define MAX_STR_LEN 80
 #define PSTR "||||||||||||||||||||||||||||||||||||||||||||||||||"
 #define PWID 50
+#define CP_W 0
+#define CP_R 1
 
 // FUNCTIONS
 
@@ -71,7 +73,7 @@ __host__ __device__
 user_real_t dot3( user_real_t x[3], user_real_t y[3] );
 
 
-void ir_init( char *argv[], char gmxf[], char outf[], char model[], int *ifintmeth, user_real_t *dt, int *ntcfpoints, 
+void ir_init( char *argv[], char gmxf[], char cptf[], char outf[], char model[], int *ifintmeth, user_real_t *dt, int *ntcfpoints, 
               int *nsamples, int *sampleEvery, user_real_t *t1, user_real_t *avef, int *omegaStart, int *omegaStop, 
               int *omegaStep, int *natom_mol, int *nchrom_mol, int *nzeros, user_real_t *beginTime, int *ispecd,
               user_real_t *max_int_steps);
@@ -79,5 +81,6 @@ void ir_init( char *argv[], char gmxf[], char outf[], char model[], int *ifintme
 
 void printProgress( int currentStep, int totalSteps );
 
+void checkpoint( char cptf[], int *currentSample, user_complex_t *tcf, int ntcfpoints, user_real_t *Sw, user_real_t *omega, int nomega, int RW_FLAG );
 
 #endif
