@@ -8,7 +8,7 @@
 #include <math.h>
 #include <xdrfile/xdrfile.h>
 #include <xdrfile/xdrfile_xtc.h>
-#include "calcIR.h"
+#include "calcIR.h" 
 #include <complex.h>
 #include <time.h>
 
@@ -647,7 +647,7 @@ int main(int argc, char *argv[])
             // ***        Done with Time Correlation            *** //
             // ---------------------------------------------------- //
 
-            // update progress bar if big enough, otherwise it really isn't necessary
+            // update progress bar if simulation is big enough, otherwise it really isn't necessary
             if ( nchrom > 400 )
             {
                 printProgress( frame, ntcfpoints-1 );
@@ -1431,6 +1431,5 @@ void printProgress( int currentStep, int totalSteps )
     user_real_t percentage = (user_real_t) currentStep / (user_real_t) totalSteps;
     int lpad = (int) (percentage*PWID);
     int rpad = PWID - lpad;
-    printf("\r [%.*s%*s]%3d%%", lpad, PSTR, rpad, "",(int) (percentage*100));
-    fflush (stdout);
+    fprintf(stderr, "\r [%.*s%*s]%3d%%", lpad, PSTR, rpad, "",(int) (percentage*100));
 }
