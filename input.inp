@@ -4,7 +4,7 @@ fintmeth        0                           // exact 0, adams 1
 max_int_steps   4                           // Integration steps from t to t+dt for adams method
 dt              0.010                       // time between tcf points in ps
 ntcfpoints      150                         // number of tcf points for each spectrum
-nsamples        100                         // the number of spectra to average
+nsamples        10                          // the number of spectra to average
 sampleEvery     2                           // time between successive samples
 t1              0.260                       // relaxation time
 avef            3415.2                      // average frequency to get rid of high frequency fluctuations in the tcf

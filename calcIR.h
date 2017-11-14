@@ -52,7 +52,7 @@ void get_kappa_GPU( rvec *x, float boxl, int natoms, int natom_mol, int nchrom, 
 
 __global__
 void get_spectral_density( user_real_t *w, user_real_t *MUX, user_real_t *MUY, user_real_t *MUZ, user_real_t *omega, user_real_t *Sw,
-                           int nomega, int nchrom, user_real_t t1 );
+                           int nomega, int nchrom, user_real_t t1, user_real_t avef );
 
 
 __global__

@@ -212,7 +212,7 @@ int main(int argc, char *argv[])
         cudaMalloc( &MUZ_d   , nchrom       *sizeof(user_real_t));
         cudaMalloc( &omega_d , nomega       *sizeof(user_real_t));
         cudaMalloc( &Sw_d    , nomega       *sizeof(user_real_t));
-        cudaMalloc( &w_d     , nomega       *sizeof(user_real_t));
+        cudaMalloc( &w_d     , nchrom       *sizeof(user_real_t));
     }
  
 
@@ -379,7 +379,7 @@ int main(int argc, char *argv[])
                 cudaMemcpy( Sw_d   , tmpSw, nomega*sizeof(user_real_t), cudaMemcpyHostToDevice );
 
                 // calculate the spectral density on the GPU and copy back to the CPU
-                get_spectral_density <<<numBlocks,blockSize>>> ( w_d, MUX_d, MUY_d, MUZ_d, omega_d, Sw_d, nomega, nchrom, t1 );
+                get_spectral_density <<<numBlocks,blockSize>>> ( w_d, MUX_d, MUY_d, MUZ_d, omega_d, Sw_d, nomega, nchrom, t1, avef );
                 cudaMemcpy( tmpSw, Sw_d, nomega*sizeof(user_real_t), cudaMemcpyDeviceToHost );
 
                 // Copy temporary to persistant to get average spectral density over samples
@@ -1177,7 +1177,7 @@ void get_kappa_GPU( rvec *x, float boxl, int natoms, int natom_mol, int nchrom, 
  **********************************************************/
 __global__
 void get_spectral_density( user_real_t *w, user_real_t *MUX, user_real_t *MUY, user_real_t *MUZ, user_real_t *omega, user_real_t *Sw, 
-                           int nomega, int nchrom, user_real_t t1 ){
+                           int nomega, int nchrom, user_real_t t1, user_real_t avef ){
 
     int istart, istride, i, chromn;
     user_real_t wi, dw, MU2, gamma;
@@ -1199,7 +1199,7 @@ void get_spectral_density( user_real_t *w, user_real_t *MUX, user_real_t *MUY, u
         for ( chromn = 0; chromn < nchrom; chromn ++ ){
             // calculate the TDM squared and get the mode energy
             MU2     = MUX[chromn]*MUX[chromn] + MUY[chromn]*MUY[chromn] + MUZ[chromn]*MUZ[chromn];
-            dw      = wi - w[chromn];
+            dw      = wi - (w[chromn] + avef) ; // also adjust for avef subtracted from kappa
 
             // add a lorentzian lineshape to the spectral density
             Sw[i] += MU2 * gamma / ( dw*dw + gamma*gamma )/PI;
@@ -1269,8 +1269,7 @@ void ir_init( char *argv[], char gmxf[], char outf[], char model[], int *ifintme
     FILE *inpf = fopen(argv[1],"r");
     if ( inpf == NULL )
     {
-        printf("ERROR: Could not open %s. The first argument should contain  a  vaild\
-                file name that points to a file containing the simulation parameters.", argv[1]);
+        printf("ERROR: Could not open %s. The first argument should contain  a  vaild\nfile name that points to a file containing the simulation parameters.\n", argv[1]);
         exit(EXIT_FAILURE);
     }
     else
