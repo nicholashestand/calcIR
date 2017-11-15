@@ -89,4 +89,6 @@ void checkpoint( char *argv[], char gmxf[], char cptf[], char outf[], char model
                  int *currentSample, int *currentFrame, user_complex_t *tcf, user_real_t *Sw, user_complex_t *F_d, user_complex_t *cmux0_d,
                  user_complex_t *cmuy0_d, user_complex_t *cmuz0_d, int RWI_FLAG );
 
+
+void signal_handler( int sig );
 #endif

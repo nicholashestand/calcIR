@@ -12,9 +12,13 @@
 #include <complex.h>
 #include <time.h>
 #include <unistd.h>
+#include <signal.h>
 
 #include "magma_v2.h"
 #include <cufft.h>
+
+// Global variable to catch signals and write checkpoint file
+volatile sig_atomic_t interrupted=false;
 
 int main(int argc, char *argv[])
 {
@@ -24,6 +28,10 @@ int main(int argc, char *argv[])
         printf("Usage:\n\tInclude as the first argument either the name of an input file,  or a checkpoint\n\tfile with extension '.cpt' if restarting the calculation. No other arguments are\n\tallowed.\n");
         exit(EXIT_FAILURE);   
     }
+    
+    // register signal handler
+    signal( SIGINT, signal_handler );
+    signal( SIGTERM, signal_handler );
 
     // ***              Variable Declaration            *** //
     // **************************************************** //
@@ -179,6 +187,14 @@ int main(int argc, char *argv[])
     // for timing
     time_t              start=time(NULL), end;
 
+    // for file output
+    FILE *rtcf;
+    FILE *itcf;
+    FILE *spec_density;
+    FILE *spec_lineshape; 
+    user_real_t factor;                                                                 // conversion factor to give energy and correct intensity from FFT
+    
+
     // **************************************************** //
     // ***         End  Variable Declaration            *** //
 
@@ -333,6 +349,17 @@ int main(int argc, char *argv[])
         while( currentFrame < ntcfpoints )
         {
  
+            // If the program has recieved a signal, write the current state and exit
+            if ( interrupted )
+            {
+                checkpoint( argv, gmxf, cptf, outf, model, &ifintmeth, &dt, &ntcfpoints, &nsamples, &sampleEvery, &t1, 
+                            &avef, &omegaStart, &omegaStop, &omegaStep, &natom_mol, &nchrom_mol, &nzeros, &beginTime,
+                            &SPECD_FLAG, &max_int_steps, nchrom, nomega, &currentSample, &currentFrame, tcf, Sw, F_d, 
+                            cmux0_d, cmuy0_d, cmuz0_d, CP_WRITE );
+                exit(EXIT_SUCCESS);
+            }
+
+
 
             // ---------------------------------------------------- //
             // ***          Get Info About The System           *** //
@@ -702,7 +729,7 @@ int main(int argc, char *argv[])
 
 
             // update progress bar if simulation is big enough, otherwise it really isn't necessary
-            if ( nchrom > 400 )
+            if ( nchrom > 400 && !interrupted )
             {
                 printProgress( currentFrame, ntcfpoints-1 );
             }
@@ -779,8 +806,8 @@ int main(int argc, char *argv[])
     fname = (char *) malloc( strlen(outf) + 9 );
 
     // write time correlation function
-    FILE *rtcf = fopen(strcat(strcpy(fname,outf),"rtcf.dat"), "w");
-    FILE *itcf = fopen(strcat(strcpy(fname,outf),"itcf.dat"), "w");
+    rtcf = fopen(strcat(strcpy(fname,outf),"rtcf.dat"), "w");
+    itcf = fopen(strcat(strcpy(fname,outf),"itcf.dat"), "w");
     for ( int i = 0; i < ntcfpoints; i++ )
     {
         fprintf( rtcf, "%g %g \n", i*dt, MAGMA_REAL( tcf[i] ) );
@@ -792,7 +819,7 @@ int main(int argc, char *argv[])
     // write the spectral density to file
     if ( SPECD_FLAG )
     {
-        FILE *spec_density = fopen(strcat(strcpy(fname,outf),"spdn.dat"), "w");
+        spec_density = fopen(strcat(strcpy(fname,outf),"spdn.dat"), "w");
         for ( int i = 0; i < nomega; i++)
         {
             fprintf(spec_density, "%g %g\n", omega[i], Sw[i]);
@@ -802,8 +829,8 @@ int main(int argc, char *argv[])
 
     // Write the absorption lineshape... Since the C2R transform is inverse by default, the frequencies have to be negated
     // note if you need to compare with YICUN's code, divide Ftcf by 2
-    FILE *spec_lineshape = fopen(strcat(strcpy(fname,outf),"spec.dat"),"w");
-    user_real_t factor   = 2*PI*HBAR/(dt*(ntcfpoints+nzeros));          // conversion factor to give energy and correct intensity from FFT
+    spec_lineshape = fopen(strcat(strcpy(fname,outf),"spec.dat"),"w");
+    factor         = 2*PI*HBAR/(dt*(ntcfpoints+nzeros));          // conversion factor to give energy and correct intensity from FFT
     for ( int i = (ntcfpoints+nzeros)/2; i < ntcfpoints+nzeros; i++ )   // "negative" FFT frequencies
     {
         if ( -1*(i-ntcfpoints-nzeros)*factor + avef <= (user_real_t) omegaStop  )
@@ -1586,6 +1613,7 @@ void checkpoint( char *argv[], char gmxf[], char cptf[], char outf[], char model
 
                 // close the file 
                 fclose(cptfp);
+
             }
             // Read the current state
             else if ( RWI_FLAG == CP_READ )
@@ -1612,19 +1640,23 @@ void checkpoint( char *argv[], char gmxf[], char cptf[], char outf[], char model
                     cudaMemcpy( F_d, tmparr     , nchrom*nchrom*sizeof(user_complex_t), cudaMemcpyHostToDevice );
 
                     fread( tmparr  , sizeof(user_complex_t), nchrom        , cptfp ); // mu0 -- not needed at frame 0
-                    cudaMemcpy( cmux0_d, tmparr, nchrom*sizeof(user_complex_t), cudaMemcpyDeviceToHost );
+                    cudaMemcpy( cmux0_d, tmparr, nchrom*sizeof(user_complex_t), cudaMemcpyHostToDevice );
 
                     fread( tmparr  , sizeof(user_complex_t), nchrom        , cptfp ); // mu0 -- not needed at frame 0
-                    cudaMemcpy( cmuy0_d, tmparr, nchrom*sizeof(user_complex_t), cudaMemcpyDeviceToHost );
+                    cudaMemcpy( cmuy0_d, tmparr, nchrom*sizeof(user_complex_t), cudaMemcpyHostToDevice );
 
                     fread( tmparr  , sizeof(user_complex_t), nchrom        , cptfp ); // mu0 -- not needed at frame 0
-                    cudaMemcpy( cmuz0_d, tmparr, nchrom*sizeof(user_complex_t), cudaMemcpyDeviceToHost );
+                    cudaMemcpy( cmuz0_d, tmparr, nchrom*sizeof(user_complex_t), cudaMemcpyHostToDevice );
 
                     free( tmparr );
                 }
 
                 // close the file
                 fclose(cptfp);
+
+                // print message to user about the restart
+                printf(">>> Found checkpoint file %s.\n>>> Will restart the calculation from sample %d and frame %d.",cptf, *currentSample+1, *currentFrame);
+ 
             }
         }
         else
@@ -1633,4 +1665,11 @@ void checkpoint( char *argv[], char gmxf[], char cptf[], char outf[], char model
             exit(EXIT_FAILURE);
         }
     }
+}
+
+void signal_handler( int sig )
+{
+    //... program has recieved some signal
+    interrupted=true;
+    fprintf(stderr, "\nRecieved signal. Will write checkpoint file and exit.\n");
 }
