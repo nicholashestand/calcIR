@@ -81,6 +81,8 @@ void ir_init( char *argv[], char gmxf[], char cptf[], char outf[], char model[],
 
 void printProgress( int currentStep, int totalSteps );
 
-void checkpoint( char cptf[], int *currentSample, user_complex_t *tcf, int ntcfpoints, user_real_t *Sw, user_real_t *omega, int nomega, int RW_FLAG );
+void checkpoint( char cptf[], int *currentSample, int *currentFrame, user_complex_t *tcf, int ntcfpoints, user_complex_t *F, 
+                 int nchrom2, user_complex_t *cmux0, user_complex_t *cmuy0, user_complex_t *cmuz0, int nchrom, 
+                 int ispecd, user_real_t *Sw, user_real_t *omega, int nomega, int RW_FLAG );
 
 #endif
