@@ -19,10 +19,17 @@
 int main(int argc, char *argv[])
 {
 
+    // Some help for starting the program
+    if ( argc != 2 ){
+        printf("Usage:\n\tInclude as the first argument either the name of an input file,  or a checkpoint\n\tfile with extension '.cpt' if restarting the calculation. No other arguments are\n\tallowed.\n");
+        exit(EXIT_FAILURE);   
+    }
+
     // ***              Variable Declaration            *** //
     // **************************************************** //
 
     printf("\n>>> Setting default parameters\n");
+
     // Default values for user input
     char          gmxf[MAX_STR_LEN]; 
     strncpy( gmxf, "n216/traj_comp.xtc", MAX_STR_LEN );                   // trajectory file
@@ -33,7 +40,7 @@ int main(int argc, char *argv[])
     char          model[MAX_STR_LEN];
     strncpy( model, "tip4p", MAX_STR_LEN );
     int           imodel        = 0;
-    int           ispecd        = 0;
+    int           SPECD_FLAG    = 1;                                      // calculate the spectral density
     int           ifintmeth     = 0;
     user_real_t   dt            = 0.010;                                  // dt between frames in xtc file (in ps)
     int           ntcfpoints    = 150 ;                                   // the number of tcf points for each spectrum
@@ -55,14 +62,56 @@ int main(int argc, char *argv[])
 
  
     // get user input parameters
-    ir_init( argv, gmxf, cptf, outf, model, &ifintmeth, &dt, &ntcfpoints, &nsamples, &sampleEvery, &t1, 
-             &avef, &omegaStart, &omegaStop, &omegaStep, &natom_mol, &nchrom_mol, &nzeros, &beginTime,
-             &ispecd, &max_int_steps);
+    if ( strstr(argv[1], ".cpt") == NULL )
+    {
+        // START FROM INPUT FILE
+        ir_init( argv, gmxf, cptf, outf, model, &ifintmeth, &dt, &ntcfpoints, &nsamples, &sampleEvery, &t1, 
+                &avef, &omegaStart, &omegaStop, &omegaStep, &natom_mol, &nchrom_mol, &nzeros, &beginTime,
+                &SPECD_FLAG, &max_int_steps);
+    }
+    else
+    {
+        // START FROM CHECKPOINT FILE
+        checkpoint( argv, gmxf, cptf, outf, model, &ifintmeth, &dt, &ntcfpoints, &nsamples, &sampleEvery, &t1, 
+                    &avef, &omegaStart, &omegaStop, &omegaStep, &natom_mol, &nchrom_mol, &nzeros, &beginTime,
+                    &SPECD_FLAG, &max_int_steps, 0, 0, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, CP_INIT );
+    }
 
-    // Some useful variables and constants
-    int                 natoms, nmol, frame, nchrom;
+    // Print the parameters to stdout
+    printf("\tSetting xtc file %s\n",                       gmxf        );
+    printf("\tSetting default file name to %s\n",           outf        );
+    printf("\tSetting cpt file %s\n",                       cptf        );
+    printf("\tSetting model to %s\n",                       model       );
+    printf("\tSetting F integration method to %d\n",        ifintmeth   );
+    printf("\tSetting the number of tcf points to %d\n",    ntcfpoints  );
+    printf("\tSetting nsamples to %d\n",                    nsamples    ); 
+    printf("\tSetting sampleEvery to %d (ps)\n",            sampleEvery );
+    printf("\tSetting omegaStart to %d\n",                  omegaStart  );
+    printf("\tSetting omegaStop to %d\n",                   omegaStop   );
+    printf("\tSetting omegaStep to %d\n",                   omegaStep   );
+    printf("\tSetting natom_mol to %d\n",                   natom_mol   );
+    printf("\tSetting nchrom_mol to %d\n",                  nchrom_mol  );
+    printf("\tSetting nzeros to %d\n",                      nzeros      );
+    printf("\tSetting SPECD_FLAG to %d\n",                  SPECD_FLAG  );
+#ifdef USE_DOUBLES
+    printf("\tSetting dt to %lf\n",                         dt          );
+    printf("\tSetting t1 to %lf (ps)\n",                    t1          );
+    printf("\tSetting avef to %lf\n",                       avef        );
+    printf("\tSetting equilibration time to %lf (ps)\n",    beginTime   );
+    printf("\tSetting max_int_steps to %lf\n",              max_int_steps );
+#else
+    printf("\tSetting dt to %f\n",                          dt          );
+    printf("\tSetting t1 to %f (ps)\n",                     t1          );
+    printf("\tSetting avef to %f\n",                        avef        );
+    printf("\tSetting equilibration time to %f (ps)\n",     beginTime   );
+    printf("\tSetting max_int_steps to %f\n",               max_int_steps );
+#endif
+ 
+
+    // Some variables and constants
+    int                 natoms, nmol, nchrom;
     magma_int_t         nchrom2;
-    const int           ntcfpointsR     = (nzeros + ntcfpoints - 1)*2;                  // number of points for the real fourier transform
+    const int           ntcfpointsR     = ( nzeros + ntcfpoints - 1 ) * 2;              // number of points for the real fourier transform
     const int           nomega          = ( omegaStop - omegaStart ) / omegaStep + 1;   // number of frequencies for the spectral density
     int                 currentSample   = 0;                                            // current sample
     int                 currentFrame    = 0;                                            // current frame
@@ -115,7 +164,6 @@ int main(int argc, char *argv[])
 
     // variables for TCF
     user_complex_t      *F, *F_d;                                                       // F matrix on CPU and GPU
-    user_complex_t      *cmux0, *cmuy0, *cmuz0;                                         // For checkpointing I need the dipole moments at time zero
     user_complex_t      *prop, *prop_d;                                                 // Propigator matrix on CPU and GPU
     user_complex_t      *ctmpmat_d;                                                     // temporary complex matrix for matrix multiplications on gpu
     user_complex_t      *ckappa_d;                                                      // A complex version of kappa
@@ -178,9 +226,6 @@ int main(int argc, char *argv[])
     Ftcf    = (user_real_t *)    calloc( ntcfpointsR  , sizeof(user_real_t));
     tcf     = (user_complex_t *) calloc( ntcfpoints   , sizeof(user_complex_t));
     F       = (user_complex_t *) calloc( nchrom2      , sizeof(user_complex_t));
-    cmux0   = (user_complex_t *) calloc( nchrom      , sizeof(user_complex_t));
-    cmuy0   = (user_complex_t *) calloc( nchrom      , sizeof(user_complex_t));
-    cmuz0   = (user_complex_t *) calloc( nchrom      , sizeof(user_complex_t));
 
     // GPU arrays
     cudaMalloc( &x_d      , natoms       *sizeof(x[0]));
@@ -204,7 +249,7 @@ int main(int argc, char *argv[])
 
 
     // memory for spectral density calculation, if requested
-    if ( ispecd == 0 )
+    if ( SPECD_FLAG )
     {
         // CPU arrays
         omega   = (user_real_t *)    malloc( nomega       * sizeof(user_real_t));
@@ -218,6 +263,9 @@ int main(int argc, char *argv[])
         cudaMalloc( &omega_d , nomega       *sizeof(user_real_t));
         cudaMalloc( &Sw_d    , nomega       *sizeof(user_real_t));
         cudaMalloc( &w_d     , nchrom       *sizeof(user_real_t));
+
+        // initialize omega array
+        for (int i = 0; i < nomega; i++) omega[i] = (user_real_t) (omegaStart + omegaStep*i); 
     }
  
 
@@ -235,18 +283,19 @@ int main(int argc, char *argv[])
         cudaMalloc( &k4_d    , nchrom2      *sizeof(user_complex_t));
     }
 
-    // ***          END MEMORY ALLOCATION               *** //
+    // ***            END MEMORY ALLOCATION             *** //
     // **************************************************** //
     
 
-    // ***          Check for Checkpoint File           *** //
+    // ***       Read State Info From Checkpoint        *** //
     // **************************************************** //
-    checkpoint( cptf, &currentSample, &currentFrame, tcf, ntcfpoints, F, nchrom2, 
-                cmux0, cmuy0, cmuz0, nchrom, ispecd, Sw, omega, nomega, CP_R );
-    cudaMemcpy( F_d, F, nchrom2*sizeof(user_complex_t), cudaMemcpyHostToDevice );
-    cudaMemcpy( cmux0_d, cmux0, nchrom*sizeof(user_complex_t), cudaMemcpyHostToDevice );
-    cudaMemcpy( cmuy0_d, cmuy0, nchrom*sizeof(user_complex_t), cudaMemcpyHostToDevice );
-    cudaMemcpy( cmuz0_d, cmuz0, nchrom*sizeof(user_complex_t), cudaMemcpyHostToDevice );
+    if ( strstr(argv[1], ".cpt") != NULL )
+    {
+        checkpoint( argv, gmxf, cptf, outf, model, &ifintmeth, &dt, &ntcfpoints, &nsamples, &sampleEvery, &t1, 
+                    &avef, &omegaStart, &omegaStop, &omegaStep, &natom_mol, &nchrom_mol, &nzeros, &beginTime,
+                    &SPECD_FLAG, &max_int_steps, nchrom, nomega, &currentSample, &currentFrame, tcf, Sw, F_d, 
+                    cmux0_d, cmuy0_d, cmuz0_d, CP_READ );
+    }
     // **************************************************** //
 
 
@@ -276,29 +325,14 @@ int main(int argc, char *argv[])
             fflush(stdout);
 
             // If starting from checkpoint, fast forward the trajectory until you are at the correct frame 
-            if ( currentFrame != 0 )
-            {
-                for ( int i = 0; i < currentFrame -1 ; i++ ) read_xtc( trj, natoms, &step, &gmxtime, box, x, &prec );
-            }
- 
+            if ( currentFrame != 0 ) for ( int i = 0; i < currentFrame -1 ; i++ ) read_xtc( trj, natoms, &step, &gmxtime, box, x, &prec );
 
 
         // **************************************************** //
         // ***         MAIN LOOP OVER TRAJECTORY            *** //
-        for ( frame = currentFrame; frame < ntcfpoints; frame++ )
+        while( currentFrame < ntcfpoints )
         {
-
-
-            // checkpoint the simulation at the start of each frame -- 
-            // this will write the last configuration to the checkpoint file
-            // before the new one has started
-            // Also need to copy the current F matrix -- this can be big and you may only want to do this when sigint or sigterm is called.
-            cudaMemcpy( F, F_d,         nchrom2*sizeof(user_complex_t), cudaMemcpyDeviceToHost );
-            cudaMemcpy( cmux0, cmux0_d, nchrom*sizeof(user_complex_t), cudaMemcpyDeviceToHost );
-            cudaMemcpy( cmuy0, cmuy0_d, nchrom*sizeof(user_complex_t), cudaMemcpyDeviceToHost );
-            cudaMemcpy( cmuz0, cmuz0_d, nchrom*sizeof(user_complex_t), cudaMemcpyDeviceToHost );
-            checkpoint( cptf, &currentSample, &frame, tcf, ntcfpoints, F, nchrom2, 
-                        cmux0, cmuy0, cmuz0, nchrom, ispecd, Sw, omega, nomega, CP_W );
+ 
 
             // ---------------------------------------------------- //
             // ***          Get Info About The System           *** //
@@ -307,9 +341,8 @@ int main(int argc, char *argv[])
             // read the current frame from the trajectory file and copy to device memory
             // note it was read in the outer loop if we are at frame 0
             // also assume a square box, but this will need to be changed if it is not the case
-            if ( frame != 0 ){
+            if ( currentFrame != 0 ){
                 read_xtc( trj, natoms, &step, &gmxtime, box, x, &prec );
-                printf("gmxtime %g\n", gmxtime);
             }
             cudaMemcpy( x_d, x, natoms*sizeof(x[0]), cudaMemcpyHostToDevice );
             boxl = box[0][0];
@@ -331,7 +364,7 @@ int main(int argc, char *argv[])
             // ***          Diagonalize the Hamiltonian         *** //
 
             // Note that kappa only needs to be diagonalized if the exact integration method is requested or the spectral density
-            if ( ifintmeth == 0 || ispecd == 0 )
+            if ( ifintmeth == 0 || SPECD_FLAG )
             {
 
 
@@ -358,7 +391,7 @@ int main(int argc, char *argv[])
                     magma_smalloc_pinned( &wA , nchrom2 );
                     magma_smalloc_pinned( &work , lwork  );
 #endif
-                    SSYEVR_ALLOC_FLAG = 0;// is allocated, so we won't need to do it again
+                    SSYEVR_ALLOC_FLAG = 0;  // is allocated, so we won't need to do it again
                 }
 
 #ifdef USE_DOUBLES
@@ -378,7 +411,7 @@ int main(int argc, char *argv[])
             // ---------------------------------------------------- //
             // ***              The Spectral Density            *** //
 
-            if ( frame == 0 && ispecd == 0)
+            if ( currentFrame == 0 && SPECD_FLAG )
             {
 
                 // project the transition dipole moments onto the eigenbasis
@@ -399,12 +432,8 @@ int main(int argc, char *argv[])
                              1.0, kappa_d, (magma_int_t) nchrom, muz_d, 1, 0.0, MUZ_d, 1, queue);
 #endif
 
-                // Define the spectral range of interest and initialize spectral arrays
-                for (int i = 0; i < nomega; i++)
-                {
-                    omega[i] = (user_real_t) (omegaStart + omegaStep*i); 
-                    tmpSw[i] = 0.0;
-                }
+                // Initializee the temporary array for spectral density
+                for (int i = 0; i < nomega; i++) tmpSw[i] = 0.0;
 
                 // Copy relevant variables to device memory
                 cudaMemcpy( omega_d, omega, nomega*sizeof(user_real_t), cudaMemcpyHostToDevice );
@@ -441,7 +470,7 @@ int main(int argc, char *argv[])
             // ---------------------------------------------------- //
             // ***           Calculate the F matrix             *** //
 
-            if ( frame == 0 )
+            if ( currentFrame == 0 )
             {
                 // initialize the F matrix at t=0 to the unit matrix
                 // TODO: Initialize on GPU memory and get rid of host F matrix
@@ -523,7 +552,7 @@ int main(int argc, char *argv[])
                 else if ( ifintmeth == 1 ) // Integrate F with 4th order Adams-Bashfort
                 {                          // Note: The kappa matrix is assumed to be time independent over this integration cycle of max_int_steps
                     // reset current order if at the begining of a sample
-                    if ( frame == 1 ) order_counter = 1;
+                    if ( currentFrame == 1 ) order_counter = 1;
 
                     for ( int i=0; i<(int) max_int_steps; i++ )// take multiple steps
                     {
@@ -535,7 +564,6 @@ int main(int argc, char *argv[])
 
                         // For the first step use Euler since previous values are not available
                         if ( order_counter == 1 )
-                        //if ( frame == 0 && i == 0 )
                         {
                             // save current value for later
                             magma_zcopy( (magma_int_t) nchrom2, ctmpmat_d , 1, k1_d, 1, queue );
@@ -544,7 +572,6 @@ int main(int argc, char *argv[])
                         }
                         // use ADAMS bensforth two-step method for step 2
                         else if ( order_counter == 2 )
-                        //else if ( frame == 0 && i == 1 )
                         {
                             // save current values for later
                             magma_zcopy( (magma_int_t) nchrom2, ctmpmat_d , 1, k2_d, 1, queue );
@@ -553,7 +580,6 @@ int main(int argc, char *argv[])
                             order_counter = 3;
                         }
                         // use ADAMS bensforth three-step method
-                        //else if ( frame == 0 && i == 2 )
                         else if ( order_counter == 3 )
                         {
                             // save current values for later
@@ -586,7 +612,6 @@ int main(int argc, char *argv[])
 
                         // For the first step use Euler since previous values are not available
                         if ( order_counter == 1 )
-                        //if ( frame == 0 && i == 0 )
                         {
                             // save current value for later
                             magma_ccopy( (magma_int_t) nchrom2, ctmpmat_d , 1, k1_d, 1, queue );
@@ -595,7 +620,6 @@ int main(int argc, char *argv[])
                         }
                         // use ADAMS bensforth two-step method for step 2
                         else if ( order_counter == 2 )
-                        //else if ( frame == 0 && i == 1 )
                         {
                             // save current values for later
                             magma_ccopy( (magma_int_t) nchrom2, ctmpmat_d , 1, k2_d, 1, queue );
@@ -604,7 +628,6 @@ int main(int argc, char *argv[])
                             order_counter = 3;
                         }
                         // use ADAMS bensforth three-step method
-                        //else if ( frame == 0 && i == 2 )
                         else if ( order_counter == 3 )
                         {
                             // save current values for later
@@ -669,14 +692,10 @@ int main(int argc, char *argv[])
             tcfz = magma_cdotu( (magma_int_t) nchrom, cmuz_d, 1, tmpmu_d, 1, queue );
 #endif
 
-            // save the variables to print later and multiply by the decay
+            // accumulate the tcf over the samples
             tcftmp                = MAGMA_ADD( tcfx  , tcfy );
             tcftmp                = MAGMA_ADD( tcftmp, tcfz );
-            dcy                   = MAGMA_MAKE(exp( -1.0 * frame * dt / ( 2.0 * t1 )), 0.0);
-            tcftmp                = MAGMA_MUL( tcftmp, dcy );
-            
-            // copy time correlation function to persistant variable to calculate average spectrum later
-            tcf[ frame ]          = MAGMA_ADD( tcf[frame], tcftmp );
+            tcf[ currentFrame ]   = MAGMA_ADD( tcf[currentFrame], tcftmp );
 
             // ***        Done with Time Correlation            *** //
             // ---------------------------------------------------- //
@@ -685,16 +704,21 @@ int main(int argc, char *argv[])
             // update progress bar if simulation is big enough, otherwise it really isn't necessary
             if ( nchrom > 400 )
             {
-                printProgress( frame, ntcfpoints-1 );
+                printProgress( currentFrame, ntcfpoints-1 );
             }
+            
+            // done with current frame, move to next
+            currentFrame += 1;
         }
 
-        // done with current sample, move to next
+        // done with current sample, move to next, and reset currentFrame to 0
         currentSample +=1;
- 
-        // update currentFrame to make sure the next iteration starts at frame 0
-        // this is necessary when restarting from a frame within a checkpoint file
-        currentFrame = 0;
+        currentFrame  = 0;
+
+        checkpoint( argv, gmxf, cptf, outf, model, &ifintmeth, &dt, &ntcfpoints, &nsamples, &sampleEvery, &t1, 
+                    &avef, &omegaStart, &omegaStop, &omegaStep, &natom_mol, &nchrom_mol, &nzeros, &beginTime,
+                    &SPECD_FLAG, &max_int_steps, nchrom, nomega, &currentSample, &currentFrame, tcf, Sw, F_d, 
+                    cmux0_d, cmuy0_d, cmuz0_d, CP_WRITE );
 
         }
     } // end outer loop
@@ -712,7 +736,11 @@ int main(int argc, char *argv[])
     pdtcf = (user_complex_t *) calloc( ntcfpoints+nzeros, sizeof(user_complex_t));
     for ( int i = 0; i < ntcfpoints; i++ )
     {
+        // multiply the tcf by the relaxation term
+        dcy      = MAGMA_MAKE(exp( -1.0 * i * dt / ( 2.0 * t1 )), 0.0);
+        tcf[i]   = MAGMA_MUL( tcf[i], dcy );
         pdtcf[i] = MAGMA_DIV(tcf[i], MAGMA_MAKE( nsamples, 0.0 ));
+
     }
     for ( int i = 0; i < nzeros; i++ )
     {
@@ -738,7 +766,7 @@ int main(int argc, char *argv[])
     {
         Ftcf[i] = Ftcf[i] ;/// (user_real_t) nsamples; 
     }
-    if ( ispecd == 0 )
+    if ( SPECD_FLAG )
     {
         for ( int i = 0; i < nomega; i++)
         {
@@ -762,7 +790,7 @@ int main(int argc, char *argv[])
     fclose( itcf );
 
     // write the spectral density to file
-    if ( ispecd == 0 )
+    if ( SPECD_FLAG )
     {
         FILE *spec_density = fopen(strcat(strcpy(fname,outf),"spdn.dat"), "w");
         for ( int i = 0; i < nomega; i++)
@@ -800,11 +828,6 @@ int main(int argc, char *argv[])
     free(tcf);
     free(F);
     free(pdtcf);
-    free( cmux0 );
-    free( cmuy0 );
-    free( cmuz0 );
- 
-        
 
     cudaFree(x_d);
     cudaFree(Ftcf_d);
@@ -838,7 +861,7 @@ int main(int argc, char *argv[])
     }
 
     // free memory used in spectral density calculation
-    if ( ispecd == 0 ) // only used if the spetral density is calculated
+    if ( SPECD_FLAG ) // only used if the spetral density is calculated
     {
         // CPU arrays
         free(omega);
@@ -1296,7 +1319,7 @@ void cast_to_complex_GPU ( user_real_t *d_d, user_complex_t *z_d, magma_int_t n 
 // parse input file to setup calculation
 void ir_init( char *argv[], char gmxf[], char cptf[], char outf[], char model[], int *ifintmeth, user_real_t *dt, int *ntcfpoints, 
               int *nsamples, int *sampleEvery, user_real_t *t1, user_real_t *avef, int *omegaStart, int *omegaStop, 
-              int *omegaStep, int *natom_mol, int *nchrom_mol, int *nzeros, user_real_t *beginTime, int *ispecd,
+              int *omegaStep, int *natom_mol, int *nchrom_mol, int *nzeros, user_real_t *beginTime, int *SPECD_FLAG,
               user_real_t *max_int_steps)
 {
     char                para[MAX_STR_LEN];
@@ -1305,11 +1328,10 @@ void ir_init( char *argv[], char gmxf[], char cptf[], char outf[], char model[],
     FILE *inpf = fopen(argv[1],"r");
     if ( inpf == NULL )
     {
-        printf("ERROR: Could not open %s. The first argument should contain  a  vaild\nfile name that points to a file containing the simulation parameters.\n", argv[1]);
+        printf("ERROR: Could not open %s. The first argument should contain  a  vaild\nfile name that points to a file containing the simulation parameters\n or a checkpoint file ending in '.cpt' to restart the simulation.", argv[1]);
         exit(EXIT_FAILURE);
     }
-    else
-        printf(">>> Reading parameters from input file %s\n", argv[1]);
+    else printf(">>> Reading parameters from input file %s\n", argv[1]);
 
     // Parse input file
     while (fscanf( inpf, "%s%s%*[^\n]", para, value ) != EOF)
@@ -1317,141 +1339,105 @@ void ir_init( char *argv[], char gmxf[], char cptf[], char outf[], char model[],
         if ( strcmp(para,"xtcf") == 0 ) 
         {
             sscanf( value, "%s", gmxf );
-            printf("\tSetting xtc file %s\n", gmxf );
         }
         else if ( strcmp(para,"outf") == 0 )
         {
             sscanf( value, "%s", outf );
-            printf("\tSetting default file name to %s\n", outf);
         }
         else if ( strcmp(para,"cptf") == 0 ) 
         {
             sscanf( value, "%s", cptf );
-            printf("\tSetting cpt file %s\n", cptf );
         }
         else if ( strcmp(para,"model") == 0 )
         {
             sscanf( value, "%s", model );
-            printf("\tSetting model to %s\n", model );
-            if ( strcmp( model, "tip4p2005") == 0 || strcmp( model, "e3b3") == 0 )
-            {
-                printf("\tThe OM distance will be adjusted to that of TIP4P for the efield calculation\n");
-            }
         }
         else if ( strcmp(para,"fintmeth") == 0 )
         {
             sscanf( value, "%d", (int *) ifintmeth );
             if ( *ifintmeth < 0 || *ifintmeth > 1 ) *ifintmeth = 0;
-            printf("\tSetting F integration method to %d\n", (int ) *ifintmeth);
         }
         else if ( strcmp(para,"ntcfpoints") == 0 )
         {
             sscanf( value, "%d", (int *) ntcfpoints );
-            printf("\tSetting the number of tcf points to %d\n", (int) *ntcfpoints);
         }
         else if ( strcmp(para,"nsamples") == 0 )
         {
             sscanf( value, "%d", (int *) nsamples);
-            printf("\tSetting nsamples to %d\n", (int) *nsamples); 
         }
         else if ( strcmp(para,"sampleEvery") == 0 )
         {
             sscanf( value, "%d", (int *) sampleEvery );
-            printf("\tSetting sampleEvery to %d (ps)\n", (int) *sampleEvery);
         }
         else if ( strcmp(para,"omegaStart") == 0 )
         {
             sscanf( value, "%d", (int *) omegaStart );
-            printf("\tSetting omegaStart to %d\n", (int) *omegaStart);
         }
         else if ( strcmp(para,"omegaStop") == 0 )
         {
             sscanf( value, "%d", (int *) omegaStop );
-            printf("\tSetting omegaStop to %d\n", (int) *omegaStop);
         }
         else if ( strcmp(para,"omegaStep") == 0 )
         {
             sscanf( value, "%d", (int *) omegaStep );
-            printf("\tSetting omegaStep to %d\n", (int) *omegaStep);
         }
         else if ( strcmp(para,"natom_mol") == 0 )
         {
             sscanf( value, "%d", (int *) natom_mol );
-            printf("\tSetting natom_mol to %d\n", (int) *natom_mol);
         }
         else if ( strcmp(para,"nchrom_mol") == 0 )
         {
             sscanf( value, "%d", (int *) nchrom_mol );
-            printf("\tSetting nchrom_mol to %d\n", (int) *nchrom_mol);
         }
         else if ( strcmp(para,"nzeros") == 0 )
         {
             sscanf( value, "%d", (int *) nzeros );
-            printf("\tSetting nzeros to %d\n", (int) *nzeros);
         }
-        else if ( strcmp(para,"specd") == 0 )
+        else if ( strcmp(para,"SPECD_FLAG") == 0 )
         {
-            sscanf( value, "%d", (int *) ispecd);
-            if ( ispecd == 0 )
-            {
-                printf("\tWill calculate the spectral density\n");
-            }
-            else
-            {
-                printf("\tWill not calculate the spectral density\n");
-            }
+            sscanf( value, "%d", (int *) SPECD_FLAG);
         }
 #ifdef USE_DOUBLES
         else if ( strcmp(para,"dt") == 0 )
         {
             sscanf( value, "%lf", dt );
-            printf("\tSetting dt to %lf\n", *dt);
         }
         else if ( strcmp(para,"t1") == 0 )
         {
             sscanf( value, "%lf", t1 );
-            printf("\tSetting t1 to %lf (ps)\n", *t1);
         }
         else if ( strcmp(para,"avef") == 0 )
         {
             sscanf( value, "%lf", avef );
-            printf("\tSetting avef to %lf\n", *avef);
         }
         else if ( strcmp(para,"beginTime") == 0 )
         {
             sscanf( value, "%lf", beginTime );
-            printf("\tSetting equilibration time to %lf (ps)\n", *beginTime );
         }
         else if ( strcmp(para,"max_int_steps") == 0 )
         {
             sscanf( value, "%lf", max_int_steps);
-            printf("\tSetting max_int_steps to %lf\n", *max_int_steps );
         }
 #else
         else if ( strcmp(para,"dt") == 0 )
         {
             sscanf( value, "%f", dt );
-            printf("\tSetting dt to %f\n", *dt);
         }
         else if ( strcmp(para,"t1") == 0 )
         {
             sscanf( value, "%f", t1 );
-            printf("\tSetting t1 to %f (ps)\n", *t1);
         }
         else if ( strcmp(para,"avef") == 0 )
         {
             sscanf( value, "%f", avef );
-            printf("\tSetting avef to %f\n", *avef);
         }
         else if ( strcmp(para,"beginTime") == 0 )
         {
             sscanf( value, "%f", beginTime );
-            printf("\tSetting equilibration time to %f (ps)\n", *beginTime );
         }
         else if ( strcmp(para,"max_int_steps") == 0 )
         {
             sscanf( value, "%f", max_int_steps);
-            printf("\tSetting max_int_steps to %f\n", *max_int_steps );
         }
 #endif
         else
@@ -1479,18 +1465,22 @@ void printProgress( int currentStep, int totalSteps )
 
 
 // Checkpoint the simulation
-void checkpoint( char cptf[], int *currentSample, int *currentFrame, user_complex_t *tcf, int ntcfpoints, user_complex_t *F, 
-                 int nchrom2, user_complex_t *cmux0, user_complex_t *cmuy0, user_complex_t *cmuz0, int nchrom, 
-                 int ispecd, user_real_t *Sw, user_real_t *omega, int nomega, int RW_FLAG ){
+// TODO: Things that don't need to be consistent -- t1, nzeros, nsamples, omega
+void checkpoint( char *argv[], char gmxf[], char cptf[], char outf[], char model[], int *ifintmeth, user_real_t *dt, int *ntcfpoints, 
+                 int *nsamples, int *sampleEvery, user_real_t *t1, user_real_t *avef, int *omegaStart, int *omegaStop, int *omegaStep,
+                 int *natom_mol, int *nchrom_mol, int *nzeros, user_real_t *beginTime, int *SPECD_FLAG, user_real_t *max_int_steps, int nchrom, int nomega,
+                 int *currentSample, int *currentFrame, user_complex_t *tcf, user_real_t *Sw, user_complex_t *F_d, user_complex_t *cmux0_d,
+                 user_complex_t *cmuy0_d, user_complex_t *cmuz0_d, int RWI_FLAG )
+{
 
-    FILE *cptfp;
-    char bakf[MAX_STR_LEN];
+    FILE *cptfp;                // checkpoint file pointer
+    char bakf[MAX_STR_LEN];     // backup file name
+    char prognm[MAX_STR_LEN];   // program name, to make sure precision is the same
+    user_complex_t *tmparr;     // temporary variable to transfer variables from CPU <-> GPU for reading/writing
  
 
-    // TODO: WRITE ALL PARAMETERS -- then check that these match the provided input file
-
-    // Writing
-    if ( RW_FLAG == 0 )
+    // Writing the checkpoint file
+    if ( RWI_FLAG == CP_WRITE )
     {
         // if cpt file exists, back it up before proceeding
         sprintf(bakf,"%s.bak",cptf);
@@ -1498,56 +1488,149 @@ void checkpoint( char cptf[], int *currentSample, int *currentFrame, user_comple
 
         // back up calculation
         cptfp = fopen(cptf, "wb");
-        fwrite( currentSample, sizeof(int), 1, cptfp ); // current sample number
-        fwrite( currentFrame,  sizeof(int), 1, cptfp ); // current frame  number
-        fwrite( tcf, sizeof(user_complex_t), ntcfpoints, cptfp ); // current time correlation function
-        if ( ispecd == 0 )
-        {
-            fwrite( Sw,  sizeof(user_real_t),    nomega    , cptfp ); // current spectral density
-            fwrite( omega,  sizeof(user_real_t), nomega    , cptfp ); // current spectral density frequencies
-        }
-        if (*currentFrame !=0) 
-        {
-            fwrite( F, sizeof(user_complex_t), nchrom2, cptfp ); // current F matrix -- not needed at frame 0
-            fwrite( cmux0, sizeof(user_complex_t), nchrom, cptfp ); // mu0 -- not needed at frame 0
-            fwrite( cmuy0, sizeof(user_complex_t), nchrom, cptfp ); // mu0 -- not needed at frame 0
-            fwrite( cmuz0, sizeof(user_complex_t), nchrom, cptfp ); // mu0 -- not needed at frame 0
-        }
 
+        // Write the simulation parameters      
+        fwrite( argv[0]     , MAX_STR_LEN           , 1, cptfp );         // program name
+        fwrite( gmxf        , MAX_STR_LEN           , 1, cptfp );         // trajectory file
+        fwrite( cptf        , MAX_STR_LEN           , 1, cptfp );         // checkpoint file
+        fwrite( outf        , MAX_STR_LEN           , 1, cptfp );         // output file names
+        fwrite( model       , MAX_STR_LEN           , 1, cptfp );         // model
+        fwrite( ifintmeth   , sizeof(int)           , 1, cptfp );         // integration method
+        fwrite( ntcfpoints  , sizeof(int)           , 1, cptfp );         // number of tcf points
+        fwrite( nsamples    , sizeof(int)           , 1, cptfp );         // number of samples -- TODO: Doesn't need to be the same
+        fwrite( sampleEvery , sizeof(int)           , 1, cptfp );         // time between samples
+        fwrite( omegaStart  , sizeof(int)           , 1, cptfp );         // omegaStart for spectral density
+        fwrite( omegaStop   , sizeof(int)           , 1, cptfp );         // omegaStop  for spectral density
+        fwrite( omegaStep   , sizeof(int)           , 1, cptfp );         // omegaStep  for spectral density
+        fwrite( natom_mol   , sizeof(int)           , 1, cptfp );         // atoms per molecule
+        fwrite( nchrom_mol  , sizeof(int)           , 1, cptfp );         // chromophores per molecule
+        fwrite( nzeros      , sizeof(int)           , 1, cptfp );         // number of zeros to pad the tcf before FT -- TODO: Doesn't need to be the same
+        fwrite( SPECD_FLAG  , sizeof(int)           , 1, cptfp );         // switch to calculate spectral density
 
+        fwrite( max_int_steps, sizeof(user_real_t)  , 1, cptfp );         // max integration steps if using adams/bashforth integration
+        fwrite( t1          , sizeof(user_real_t)   , 1, cptfp );         // relaxation time -- TODO: Doesn't need to be the same
+        fwrite( dt          , sizeof(user_real_t)   , 1, cptfp );         // timestep
+        fwrite( avef        , sizeof(user_real_t)   , 1, cptfp );         // average frequency
+        fwrite( beginTime   , sizeof(user_real_t)   , 1, cptfp );         // time to start taking samples
+
+        // Write the current configuration
+        fwrite( currentSample,  sizeof(int)         , 1, cptfp );         // current sample number
+        fwrite( currentFrame ,  sizeof(int)         , 1, cptfp );         // current frame  number
+        fwrite( tcf, sizeof(user_complex_t), *ntcfpoints, cptfp );         // current time correlation function
+        if ( *SPECD_FLAG ){
+            fwrite( Sw,  sizeof(user_real_t),    nomega    , cptfp );     // current spectral density
+        }
+        if (*currentFrame !=0){// if at frame 0, this will all be generated on restart and doesn't need to be recorded
+            // Malloc space for temporary variable for CPU <-> GPU transfer
+            tmparr  = (user_complex_t *) malloc( nchrom*nchrom * sizeof(user_complex_t));
+
+            // copy memory from gpu to cpu and write
+            cudaMemcpy( tmparr, F_d     , nchrom*nchrom*sizeof(user_complex_t), cudaMemcpyDeviceToHost );
+            fwrite( tmparr  , sizeof(user_complex_t), nchrom*nchrom , cptfp ); // current F matrix -- not needed at frame 0
+
+            cudaMemcpy( tmparr, cmux0_d , nchrom*sizeof(user_complex_t), cudaMemcpyDeviceToHost );
+            fwrite( tmparr  , sizeof(user_complex_t), nchrom        , cptfp ); // mu0 -- not needed at frame 0
+
+            cudaMemcpy( tmparr, cmuy0_d , nchrom*sizeof(user_complex_t), cudaMemcpyDeviceToHost );
+            fwrite( tmparr  , sizeof(user_complex_t), nchrom        , cptfp ); // mu0 -- not needed at frame 0
+
+            cudaMemcpy( tmparr, cmuz0_d , nchrom*sizeof(user_complex_t), cudaMemcpyDeviceToHost );
+            fwrite( tmparr  , sizeof(user_complex_t), nchrom        , cptfp ); // mu0 -- not needed at frame 0
+
+            free( tmparr );
+        }
 
         // close the file
         fclose(cptfp);
     }
-    // Reading
+    // Read the configuration from the checkpoint file
     else
     {
-        // if cpt file exists, read it and restart calculation
-        if( access( cptf, F_OK ) != -1 ) 
+        // if cpt file exists, read it and restart calculation, else abort
+        if( access( argv[1], F_OK ) != -1 ) 
         {
-            cptfp = fopen(cptf,"rb");
-            fread(currentSample, sizeof(int), 1, cptfp );
-            fread(currentFrame , sizeof(int), 1, cptfp );
-            fread( tcf,sizeof(user_complex_t), ntcfpoints, cptfp );
-            if ( ispecd == 0 )
+            // Initialize the simulation by reading parameters
+            if ( RWI_FLAG == CP_INIT )
             {
-                fread( Sw, sizeof(user_real_t)   , nomega    , cptfp );
-                fread( omega, sizeof(user_real_t), nomega    , cptfp );
+                // open the file
+                cptfp = fopen(argv[1],"rb");
+
+                // Read the simulation parameters      
+                fread( prognm      , MAX_STR_LEN           , 1, cptfp );         // program name to make sure precision is the same
+                if ( strcmp( prognm, argv[0] ) != 0 )
+                {
+                    printf(">>> The checkpoint file was created with the program %s\n but you are now using the program %s.\nAborting", prognm, argv[0]);
+                    exit(EXIT_FAILURE);
+                }
+                fread( gmxf        , MAX_STR_LEN           , 1, cptfp );         // trajectory file
+                fread( cptf        , MAX_STR_LEN           , 1, cptfp );         // checkpoint file
+                fread( outf        , MAX_STR_LEN           , 1, cptfp );         // output file names
+                fread( model       , MAX_STR_LEN           , 1, cptfp );         // model
+                fread( ifintmeth   , sizeof(int)           , 1, cptfp );         // integration method
+                fread( ntcfpoints  , sizeof(int)           , 1, cptfp );         // number of tcf points
+                fread( nsamples    , sizeof(int)           , 1, cptfp );         // number of samples -- TODO: Doesn't need to be the same
+                fread( sampleEvery , sizeof(int)           , 1, cptfp );         // time between samples
+                fread( omegaStart  , sizeof(int)           , 1, cptfp );         // omegaStart for spectral density
+                fread( omegaStop   , sizeof(int)           , 1, cptfp );         // omegaStop  for spectral density
+                fread( omegaStep   , sizeof(int)           , 1, cptfp );         // omegaStep  for spectral density
+                fread( natom_mol   , sizeof(int)           , 1, cptfp );         // atoms per molecule
+                fread( nchrom_mol  , sizeof(int)           , 1, cptfp );         // chromophores per molecule
+                fread( nzeros      , sizeof(int)           , 1, cptfp );         // number of zeros to pad the tcf before FT -- TODO: Doesn't need to be the same
+                fread( SPECD_FLAG  , sizeof(int)           , 1, cptfp );         // switch to calculate spectral density
+
+                fread( max_int_steps,sizeof(user_real_t)   , 1, cptfp );         // max integration steps if using adams/bashforth integration
+                fread( t1          , sizeof(user_real_t)   , 1, cptfp );         // relaxation time -- TODO: Doesn't need to be the same
+                fread( dt          , sizeof(user_real_t)   , 1, cptfp );         // timestep
+                fread( avef        , sizeof(user_real_t)   , 1, cptfp );         // average frequency
+                fread( beginTime   , sizeof(user_real_t)   , 1, cptfp );         // time to start taking samples
+
+                // close the file 
+                fclose(cptfp);
             }
-            if (*currentFrame !=0) 
+            // Read the current state
+            else if ( RWI_FLAG == CP_READ )
             {
-                fread( F, sizeof(user_complex_t), nchrom2, cptfp ); // current F matrix -- not needed at frame 0
-                fread( cmux0, sizeof(user_complex_t), nchrom, cptfp ); // mu0 -- not needed at frame 0
-                fread( cmuy0, sizeof(user_complex_t), nchrom, cptfp ); // mu0 -- not needed at frame 0
-                fread( cmuz0, sizeof(user_complex_t), nchrom, cptfp ); // mu0 -- not needed at frame 0
+                // open the file
+                cptfp = fopen(argv[1],"rb");
+    
+                // skip bytes containing simulation parameters
+                fseek( cptfp, 5*MAX_STR_LEN + 11 * sizeof(int) + 5 * sizeof(user_real_t), SEEK_SET );
+
+                // Write the current configuration
+                fread( currentSample,  sizeof(int)         , 1, cptfp );         // current sample number
+                fread( currentFrame ,  sizeof(int)         , 1, cptfp );         // current frame  number
+                fread( tcf, sizeof(user_complex_t), *ntcfpoints, cptfp );         // current time correlation function
+                if ( *SPECD_FLAG ){
+                    fread( Sw,  sizeof(user_real_t),    nomega    , cptfp );     // current spectral density
+                }
+                if (*currentFrame !=0){
+                    // Malloc space for temporary variable for CPU <-> GPU transfer
+                    tmparr  = (user_complex_t *) malloc( nchrom*nchrom *sizeof(user_complex_t));
+
+                    // read and copy memory from cpu to gpu
+                    fread( tmparr  , sizeof(user_complex_t), nchrom*nchrom , cptfp ); // current F matrix -- not needed at frame 0
+                    cudaMemcpy( F_d, tmparr     , nchrom*nchrom*sizeof(user_complex_t), cudaMemcpyHostToDevice );
+
+                    fread( tmparr  , sizeof(user_complex_t), nchrom        , cptfp ); // mu0 -- not needed at frame 0
+                    cudaMemcpy( cmux0_d, tmparr, nchrom*sizeof(user_complex_t), cudaMemcpyDeviceToHost );
+
+                    fread( tmparr  , sizeof(user_complex_t), nchrom        , cptfp ); // mu0 -- not needed at frame 0
+                    cudaMemcpy( cmuy0_d, tmparr, nchrom*sizeof(user_complex_t), cudaMemcpyDeviceToHost );
+
+                    fread( tmparr  , sizeof(user_complex_t), nchrom        , cptfp ); // mu0 -- not needed at frame 0
+                    cudaMemcpy( cmuz0_d, tmparr, nchrom*sizeof(user_complex_t), cudaMemcpyDeviceToHost );
+
+                    free( tmparr );
+                }
+
+                // close the file
+                fclose(cptfp);
             }
-            printf(">>> Read checkpoint file %s.\n>>> Restarting from sample %d and frame %d.\n", cptf, *currentSample+1, *currentFrame);
-            // close the file
-            fclose(cptfp);
         }
         else
         {
-            printf(">>> No cpt file found (looking for %s). Starting from sample 1.\n", cptf);
+            printf(">>> No cpt file found (looking for %s). Aborting \n", argv[1]);
+            exit(EXIT_FAILURE);
         }
     }
 }

@@ -16,5 +16,5 @@ nchrom_mol      2                           // chromophores per water molecule (
 nzeros          25600                       // zero padding to tcf to smooth the spectrum 
 model           e3b3                        // the model -- the M site is moved for E3B and TIP4P2005
 beginTime       25                          // the equilibration time in ps (ie, dont calculate the spectrum for the first beginTime many picoseconds)
-specd           0                           // 0 calculate spectral density, 1 do not calculate spectral density
+SPECD_FLAG      1                           // 0 calculate spectral density, 1 do not calculate spectral density
 cptf            ir.cpt                      // checkpoint file name if found, will restart calculation from here, otherwise will start the calculation from sample 0

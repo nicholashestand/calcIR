@@ -39,8 +39,9 @@ typedef magmaFloatComplex user_complex_t;
 #define MAX_STR_LEN 80
 #define PSTR "||||||||||||||||||||||||||||||||||||||||||||||||||"
 #define PWID 50
-#define CP_W 0
-#define CP_R 1
+#define CP_WRITE 0
+#define CP_READ  1
+#define CP_INIT  2
 
 // FUNCTIONS
 
@@ -75,14 +76,17 @@ user_real_t dot3( user_real_t x[3], user_real_t y[3] );
 
 void ir_init( char *argv[], char gmxf[], char cptf[], char outf[], char model[], int *ifintmeth, user_real_t *dt, int *ntcfpoints, 
               int *nsamples, int *sampleEvery, user_real_t *t1, user_real_t *avef, int *omegaStart, int *omegaStop, 
-              int *omegaStep, int *natom_mol, int *nchrom_mol, int *nzeros, user_real_t *beginTime, int *ispecd,
+              int *omegaStep, int *natom_mol, int *nchrom_mol, int *nzeros, user_real_t *beginTime, int *SPECD_FLAG,
               user_real_t *max_int_steps);
 
 
 void printProgress( int currentStep, int totalSteps );
 
-void checkpoint( char cptf[], int *currentSample, int *currentFrame, user_complex_t *tcf, int ntcfpoints, user_complex_t *F, 
-                 int nchrom2, user_complex_t *cmux0, user_complex_t *cmuy0, user_complex_t *cmuz0, int nchrom, 
-                 int ispecd, user_real_t *Sw, user_real_t *omega, int nomega, int RW_FLAG );
+
+void checkpoint( char *argv[], char gmxf[], char cptf[], char outf[], char model[], int *ifintmeth, user_real_t *dt, int *ntcfpoints, 
+                 int *nsamples, int *sampleEvery, user_real_t *t1, user_real_t *avef, int *omegaStart, int *omegaStop, int *omegaStep,
+                 int *natom_mol, int *nchrom_mol, int *nzeros, user_real_t *beginTime, int *SPECD_FLAG, user_real_t *max_int_steps, int nchrom, int nomega, 
+                 int *currentSample, int *currentFrame, user_complex_t *tcf, user_real_t *Sw, user_complex_t *F_d, user_complex_t *cmux0_d,
+                 user_complex_t *cmuy0_d, user_complex_t *cmuz0_d, int RWI_FLAG );
 
 #endif
