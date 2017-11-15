@@ -83,6 +83,9 @@ int main(int argc, char *argv[])
         checkpoint( argv, gmxf, cptf, outf, model, &ifintmeth, &dt, &ntcfpoints, &nsamples, &sampleEvery, &t1, 
                     &avef, &omegaStart, &omegaStop, &omegaStep, &natom_mol, &nchrom_mol, &nzeros, &beginTime,
                     &SPECD_FLAG, &max_int_steps, 0, 0, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, CP_INIT );
+        // TODO: nsamples and t1 can be changed from the values in the checkpoint file...is there an easy way to do this?
+        //printf("Enter the number of samples: ");
+        //scanf("%d", &nsamples);
     }
 
     // Print the parameters to stdout
@@ -1502,7 +1505,6 @@ void checkpoint( char *argv[], char gmxf[], char cptf[], char outf[], char model
 
     FILE *cptfp;                // checkpoint file pointer
     char bakf[MAX_STR_LEN];     // backup file name
-    char prognm[MAX_STR_LEN];   // program name, to make sure precision is the same
     user_complex_t *tmparr;     // temporary variable to transfer variables from CPU <-> GPU for reading/writing
  
 
@@ -1517,7 +1519,6 @@ void checkpoint( char *argv[], char gmxf[], char cptf[], char outf[], char model
         cptfp = fopen(cptf, "wb");
 
         // Write the simulation parameters      
-        fwrite( argv[0]     , strlen(argv[0])       , 1, cptfp );         // program name
         fwrite( gmxf        , MAX_STR_LEN           , 1, cptfp );         // trajectory file
         fwrite( cptf        , MAX_STR_LEN           , 1, cptfp );         // checkpoint file
         fwrite( outf        , MAX_STR_LEN           , 1, cptfp );         // output file names
@@ -1583,12 +1584,6 @@ void checkpoint( char *argv[], char gmxf[], char cptf[], char outf[], char model
                 cptfp = fopen(argv[1],"rb");
 
                 // Read the simulation parameters      
-                fread( prognm      , strlen(argv[0])       , 1, cptfp );         // program name to make sure precision is the same
-                if ( strcmp( prognm, argv[0] ) != 0 )
-                {
-                    printf(">>> The checkpoint file was created with the program %s\n    but you are now using the program %s. This will not work!\n    Aborting...\n", prognm, argv[0]);
-                    exit(EXIT_FAILURE);
-                }
                 fread( gmxf        , MAX_STR_LEN           , 1, cptfp );         // trajectory file
                 fread( cptf        , MAX_STR_LEN           , 1, cptfp );         // checkpoint file
                 fread( outf        , MAX_STR_LEN           , 1, cptfp );         // output file names
@@ -1622,7 +1617,7 @@ void checkpoint( char *argv[], char gmxf[], char cptf[], char outf[], char model
                 cptfp = fopen(argv[1],"rb");
     
                 // skip bytes containing simulation parameters
-                fseek( cptfp, 5*MAX_STR_LEN + 11 * sizeof(int) + 5 * sizeof(user_real_t), SEEK_SET );
+                fseek( cptfp, 4*MAX_STR_LEN + 11 * sizeof(int) + 5 * sizeof(user_real_t), SEEK_SET );
 
                 // Write the current configuration
                 fread( currentSample,  sizeof(int)         , 1, cptfp );         // current sample number
