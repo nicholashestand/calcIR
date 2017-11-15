@@ -1517,7 +1517,7 @@ void checkpoint( char *argv[], char gmxf[], char cptf[], char outf[], char model
         cptfp = fopen(cptf, "wb");
 
         // Write the simulation parameters      
-        fwrite( argv[0]     , MAX_STR_LEN           , 1, cptfp );         // program name
+        fwrite( argv[0]     , strlen(argv[0])       , 1, cptfp );         // program name
         fwrite( gmxf        , MAX_STR_LEN           , 1, cptfp );         // trajectory file
         fwrite( cptf        , MAX_STR_LEN           , 1, cptfp );         // checkpoint file
         fwrite( outf        , MAX_STR_LEN           , 1, cptfp );         // output file names
@@ -1583,7 +1583,7 @@ void checkpoint( char *argv[], char gmxf[], char cptf[], char outf[], char model
                 cptfp = fopen(argv[1],"rb");
 
                 // Read the simulation parameters      
-                fread( prognm      , MAX_STR_LEN           , 1, cptfp );         // program name to make sure precision is the same
+                fread( prognm      , strlen(argv[0])       , 1, cptfp );         // program name to make sure precision is the same
                 if ( strcmp( prognm, argv[0] ) != 0 )
                 {
                     printf(">>> The checkpoint file was created with the program %s\n    but you are now using the program %s. This will not work!\n    Aborting...\n", prognm, argv[0]);
