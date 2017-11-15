@@ -1586,7 +1586,7 @@ void checkpoint( char *argv[], char gmxf[], char cptf[], char outf[], char model
                 fread( prognm      , MAX_STR_LEN           , 1, cptfp );         // program name to make sure precision is the same
                 if ( strcmp( prognm, argv[0] ) != 0 )
                 {
-                    printf(">>> The checkpoint file was created with the program %s\n but you are now using the program %s.\nAborting", prognm, argv[0]);
+                    printf(">>> The checkpoint file was created with the program %s\n    but you are now using the program %s. This will not work!\n    Aborting...\n", prognm, argv[0]);
                     exit(EXIT_FAILURE);
                 }
                 fread( gmxf        , MAX_STR_LEN           , 1, cptfp );         // trajectory file
