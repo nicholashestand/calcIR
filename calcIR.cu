@@ -421,6 +421,10 @@ int main(int argc, char *argv[])
                     Merr = magma_smalloc_pinned( &work , lwork  ); CHK_MERR;
 #endif
                     SSYEVD_ALLOC_FLAG = 0;  // is allocated, so we won't need to do it again
+                    size_t free, total;
+                    cudaMemGetInfo( &free, &total );
+                    printf(">>> cudaMemGetInfo returned free: %g gb, total %g gb.\n", (float) free/(1024*1024*1024), (float) total/(1024*1024*1024));
+                    printf(">>> %g gb needed by diagonalization routine.\n", (float) (lwork*sizeof(user_real_t)/(1024*1024*1024)));
                 }
 
 #ifdef USE_DOUBLES
