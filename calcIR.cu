@@ -152,7 +152,6 @@ int main(int argc, char *argv[])
     // Variables for F matrix integration
     user_complex_t      *k1_d, *k2_d, *k3_d, *k4_d;                                     // Adams integration variables
     int                 order_counter = 0 ;                                             // To keep track of the current order of the Adams method
-    user_real_t         arg;                                                            // argument of exponential
 
     // magma variables for ssyevr
     user_real_t         aux_work[1];                                                    // To get optimal size of lwork
@@ -162,7 +161,7 @@ int main(int argc, char *argv[])
     user_real_t         *work;                                                          // Work array
     user_real_t         *w   ;                                                          // Eigenvalues
     user_real_t         *wA  ;                                                          // Work array
-    int                 SSYEVR_ALLOC_FLAG = 1;
+    int                 SSYEVD_ALLOC_FLAG = 1;                                          // flag whether to allocate ssyevr arrays -- it is turned off after they are allocated
 
     // magma variables for gemv
     magma_queue_t       queue;
@@ -174,8 +173,8 @@ int main(int argc, char *argv[])
     user_real_t         *tmpSw;                                                         // Temporary spectral density
 
     // variables for TCF
-    user_complex_t      *F, *F_d;                                                       // F matrix on CPU and GPU
-    user_complex_t      *prop, *prop_d;                                                 // Propigator matrix on CPU and GPU
+    user_complex_t      *F_d;                                                           // F matrix on GPU
+    user_complex_t      *prop_d;                                                        // Propigator matrix on GPU
     user_complex_t      *ctmpmat_d;                                                     // temporary complex matrix for matrix multiplications on gpu
     user_complex_t      *ckappa_d;                                                      // A complex version of kappa
     user_complex_t      tcfx, tcfy, tcfz;                                               // Time correlation function, polarized
@@ -244,27 +243,27 @@ int main(int argc, char *argv[])
     x       = (rvec*)            malloc( natoms       * sizeof(x[0] ));
     Ftcf    = (user_real_t *)    calloc( ntcfpointsR  , sizeof(user_real_t));
     tcf     = (user_complex_t *) calloc( ntcfpoints   , sizeof(user_complex_t));
-    F       = (user_complex_t *) calloc( nchrom2      , sizeof(user_complex_t));
 
     // GPU arrays
-    cudaMalloc( &x_d      , natoms       *sizeof(x[0]));
-    cudaMalloc( &Ftcf_d   , ntcfpointsR  *sizeof(user_real_t));
-    cudaMalloc( &mux_d    , nchrom       *sizeof(user_real_t));
-    cudaMalloc( &muy_d    , nchrom       *sizeof(user_real_t));
-    cudaMalloc( &muz_d    , nchrom       *sizeof(user_real_t));
-    cudaMalloc( &eproj_d  , nchrom       *sizeof(user_real_t));
-    cudaMalloc( &kappa_d  , nchrom2      *sizeof(user_real_t));
-    cudaMalloc( &cmux_d   , nchrom       *sizeof(user_complex_t));
-    cudaMalloc( &cmuy_d   , nchrom       *sizeof(user_complex_t));
-    cudaMalloc( &cmuz_d   , nchrom       *sizeof(user_complex_t));
-    cudaMalloc( &cmux0_d  , nchrom       *sizeof(user_complex_t));
-    cudaMalloc( &cmuy0_d  , nchrom       *sizeof(user_complex_t));
-    cudaMalloc( &cmuz0_d  , nchrom       *sizeof(user_complex_t));
-    cudaMalloc( &tmpmu_d  , nchrom       *sizeof(user_complex_t));
-    cudaMalloc( &ckappa_d , nchrom2      *sizeof(user_complex_t));
-    cudaMalloc( &F_d      , nchrom2      *sizeof(user_complex_t));
-    cudaMalloc( &ctmpmat_d, nchrom2      *sizeof(user_complex_t));
-    cudaMalloc( &tcf_d    , ntcfpoints   *sizeof(user_complex_t));
+    cudaError_t Cuerr;
+    Cuerr = cudaMalloc( &x_d      , natoms       *sizeof(x[0])); CHK_ERR;
+    Cuerr = cudaMalloc( &Ftcf_d   , ntcfpointsR  *sizeof(user_real_t)); CHK_ERR;
+    Cuerr = cudaMalloc( &mux_d    , nchrom       *sizeof(user_real_t)); CHK_ERR;
+    Cuerr = cudaMalloc( &muy_d    , nchrom       *sizeof(user_real_t)); CHK_ERR;
+    Cuerr = cudaMalloc( &muz_d    , nchrom       *sizeof(user_real_t)); CHK_ERR;
+    Cuerr = cudaMalloc( &eproj_d  , nchrom       *sizeof(user_real_t)); CHK_ERR;
+    Cuerr = cudaMalloc( &kappa_d  , nchrom2      *sizeof(user_real_t)); CHK_ERR;
+    Cuerr = cudaMalloc( &cmux_d   , nchrom       *sizeof(user_complex_t)); CHK_ERR;
+    Cuerr = cudaMalloc( &cmuy_d   , nchrom       *sizeof(user_complex_t)); CHK_ERR;
+    Cuerr = cudaMalloc( &cmuz_d   , nchrom       *sizeof(user_complex_t)); CHK_ERR;
+    Cuerr = cudaMalloc( &cmux0_d  , nchrom       *sizeof(user_complex_t)); CHK_ERR;
+    Cuerr = cudaMalloc( &cmuy0_d  , nchrom       *sizeof(user_complex_t)); CHK_ERR;
+    Cuerr = cudaMalloc( &cmuz0_d  , nchrom       *sizeof(user_complex_t)); CHK_ERR;
+    Cuerr = cudaMalloc( &tmpmu_d  , nchrom       *sizeof(user_complex_t)); CHK_ERR;
+    Cuerr = cudaMalloc( &ckappa_d , nchrom2      *sizeof(user_complex_t)); CHK_ERR;
+    Cuerr = cudaMalloc( &F_d      , nchrom2      *sizeof(user_complex_t)); CHK_ERR;
+    Cuerr = cudaMalloc( &ctmpmat_d, nchrom2      *sizeof(user_complex_t)); CHK_ERR;
+    Cuerr = cudaMalloc( &tcf_d    , ntcfpoints   *sizeof(user_complex_t)); CHK_ERR;
 
 
     // memory for spectral density calculation, if requested
@@ -276,12 +275,12 @@ int main(int argc, char *argv[])
         tmpSw   = (user_real_t *)    malloc( nomega       * sizeof(user_real_t));
 
         // GPU arrays
-        cudaMalloc( &MUX_d   , nchrom       *sizeof(user_real_t));
-        cudaMalloc( &MUY_d   , nchrom       *sizeof(user_real_t));
-        cudaMalloc( &MUZ_d   , nchrom       *sizeof(user_real_t));
-        cudaMalloc( &omega_d , nomega       *sizeof(user_real_t));
-        cudaMalloc( &Sw_d    , nomega       *sizeof(user_real_t));
-        cudaMalloc( &w_d     , nchrom       *sizeof(user_real_t));
+        Cuerr = cudaMalloc( &MUX_d   , nchrom       *sizeof(user_real_t)); CHK_ERR;
+        Cuerr = cudaMalloc( &MUY_d   , nchrom       *sizeof(user_real_t)); CHK_ERR;
+        Cuerr = cudaMalloc( &MUZ_d   , nchrom       *sizeof(user_real_t)); CHK_ERR;
+        Cuerr = cudaMalloc( &omega_d , nomega       *sizeof(user_real_t)); CHK_ERR;
+        Cuerr = cudaMalloc( &Sw_d    , nomega       *sizeof(user_real_t)); CHK_ERR;
+        Cuerr = cudaMalloc( &w_d     , nchrom       *sizeof(user_real_t)); CHK_ERR;
 
         // initialize omega array
         for (int i = 0; i < nomega; i++) omega[i] = (user_real_t) (omegaStart + omegaStep*i); 
@@ -291,15 +290,14 @@ int main(int argc, char *argv[])
     // memory for integration of F depending on which method is used
     if ( ifintmeth == 0 ) // exact
     {
-        prop    = (user_complex_t *) calloc( nchrom2      , sizeof(user_complex_t));
-        cudaMalloc( &prop_d  , nchrom2      *sizeof(user_complex_t));
+        Cuerr = cudaMalloc( &prop_d  , nchrom2      *sizeof(user_complex_t)); CHK_ERR;
     }
     else if ( ifintmeth == 1 ) // adams integration
     {
-        cudaMalloc( &k1_d    , nchrom2      *sizeof(user_complex_t));
-        cudaMalloc( &k2_d    , nchrom2      *sizeof(user_complex_t));
-        cudaMalloc( &k3_d    , nchrom2      *sizeof(user_complex_t));
-        cudaMalloc( &k4_d    , nchrom2      *sizeof(user_complex_t));
+        Cuerr = cudaMalloc( &k1_d    , nchrom2      *sizeof(user_complex_t)); CHK_ERR;
+        Cuerr = cudaMalloc( &k2_d    , nchrom2      *sizeof(user_complex_t)); CHK_ERR;
+        Cuerr = cudaMalloc( &k3_d    , nchrom2      *sizeof(user_complex_t)); CHK_ERR;
+        Cuerr = cudaMalloc( &k4_d    , nchrom2      *sizeof(user_complex_t)); CHK_ERR;
     }
 
     // ***            END MEMORY ALLOCATION             *** //
@@ -399,7 +397,7 @@ int main(int argc, char *argv[])
 
 
                 // if the first time, query for optimal workspace dimensions
-                if ( SSYEVR_ALLOC_FLAG )
+                if ( SSYEVD_ALLOC_FLAG )
                 {
 #ifdef USE_DOUBLES
                     magma_dsyevd_gpu( MagmaVec, MagmaUpper, (magma_int_t) nchrom, NULL, (magma_int_t) nchrom, 
@@ -421,7 +419,7 @@ int main(int argc, char *argv[])
                     magma_smalloc_pinned( &wA , nchrom2 );
                     magma_smalloc_pinned( &work , lwork  );
 #endif
-                    SSYEVR_ALLOC_FLAG = 0;  // is allocated, so we won't need to do it again
+                    SSYEVD_ALLOC_FLAG = 0;  // is allocated, so we won't need to do it again
                 }
 
 #ifdef USE_DOUBLES
@@ -431,6 +429,8 @@ int main(int argc, char *argv[])
                 magma_ssyevd_gpu( MagmaVec, MagmaUpper, (magma_int_t) nchrom, kappa_d, (magma_int_t) nchrom,
                                   w, wA, (magma_int_t) nchrom, work, lwork, iwork, liwork, &info );
 #endif
+                // copy eigenvalues to device memory
+                cudaMemcpy( w_d    , w    , nchrom*sizeof(user_real_t), cudaMemcpyHostToDevice );
             }
 
             // ***          Done with the Diagonalization       *** //
@@ -467,7 +467,6 @@ int main(int argc, char *argv[])
 
                 // Copy relevant variables to device memory
                 cudaMemcpy( omega_d, omega, nomega*sizeof(user_real_t), cudaMemcpyHostToDevice );
-                cudaMemcpy( w_d    , w    , nchrom*sizeof(user_real_t), cudaMemcpyHostToDevice );
                 cudaMemcpy( Sw_d   , tmpSw, nomega*sizeof(user_real_t), cudaMemcpyHostToDevice );
 
                 // calculate the spectral density on the GPU and copy back to the CPU
@@ -475,10 +474,7 @@ int main(int argc, char *argv[])
                 cudaMemcpy( tmpSw, Sw_d, nomega*sizeof(user_real_t), cudaMemcpyDeviceToHost );
 
                 // Copy temporary to persistant to get average spectral density over samples
-                for (int i = 0; i < nomega; i++ )
-                {
-                    Sw[i] += tmpSw[i];
-                }
+                for (int i = 0; i < nomega; i++ ) Sw[i] += tmpSw[i];
             }
 
             // ***           Done the Spectral Density          *** //
@@ -503,17 +499,7 @@ int main(int argc, char *argv[])
             if ( currentFrame == 0 )
             {
                 // initialize the F matrix at t=0 to the unit matrix
-                // TODO: Initialize on GPU memory and get rid of host F matrix
-                for ( int i = 0; i < nchrom; i ++ )
-                {
-                    for ( int j = 0; j < nchrom; j ++ )
-                    {
-                        F[ i*nchrom + j] = MAGMA_ZERO;
-                    }
-                    F[ i*nchrom + i] = MAGMA_ONE;
-                }
-                // copy the F matrix to device memory -- after initialization, won't need back in host memory
-                cudaMemcpy( F_d, F, nchrom2*sizeof(user_complex_t), cudaMemcpyHostToDevice );
+                makeI <<<numBlocks,blockSize>>> ( F_d, nchrom );
 
                 // set the transition dipole moment at t=0
                 cast_to_complex_GPU <<<numBlocks,blockSize>>> ( mux_d  , cmux0_d  , nchrom );
@@ -525,22 +511,7 @@ int main(int argc, char *argv[])
                 if ( ifintmeth == 0 )   // Integrate with exact diagonalization
                 {
                     // build the propigator
-                    // TODO, build on GPU and get rid of CPU array
-                    for ( int i = 0; i < nchrom; i++ )
-                    {
-                        // zero matrix
-                        for ( int j = 0; j < nchrom; j ++ )
-                        {
-                            prop[ i*nchrom + j] = MAGMA_ZERO;
-                        }
-                        // P = exp(iwt/hbar)
-                        arg   = w[i] * dt / HBAR;
-                        prop[ i*nchrom + i ] = MAGMA_MAKE( cos(arg), sin(arg) );
-                    }
-
-                    // copy the propigator to the gpu and convert to the local basis
-                    cudaMemcpy( prop_d, prop, nchrom2*sizeof(user_complex_t), cudaMemcpyHostToDevice );
-
+                    Pinit <<<numBlocks,blockSize>>> ( prop_d, w_d, nchrom, dt );
 #ifdef USE_DOUBLES
                     // ctmpmat_d = ckappa_d * prop_d
                     magma_zgemm( MagmaNoTrans, MagmaNoTrans, (magma_int_t) nchrom, (magma_int_t) nchrom, 
@@ -856,7 +827,6 @@ int main(int argc, char *argv[])
     free(x);
     free(Ftcf);
     free(tcf);
-    free(F);
     free(pdtcf);
 
     cudaFree(x_d);
@@ -882,7 +852,7 @@ int main(int argc, char *argv[])
 
 
     // free memory used for diagonalization
-    if ( SSYEVR_ALLOC_FLAG == 0 )
+    if ( SSYEVD_ALLOC_FLAG == 0 )
     {
         free(w);
         free(iwork);
@@ -910,7 +880,6 @@ int main(int argc, char *argv[])
     // free memory for integration of F depending on which method is used
     if ( ifintmeth == 0 ) // only used for the exact integration method
     {
-        free(prop);
         cudaFree(prop_d);
     }
     else if ( ifintmeth == 1 ) // only used for adams integration method
@@ -1345,6 +1314,47 @@ void cast_to_complex_GPU ( user_real_t *d_d, user_complex_t *z_d, magma_int_t n 
         z_d[i] = MAGMA_MAKE( d_d[i], 0.0 ); 
     }
 }
+
+// initialize the propigation matrix
+__global__
+void Pinit ( user_complex_t *prop_d, user_real_t *w_d, int n, user_real_t dt )
+{
+    int istart, istride, i, j;
+    user_real_t arg;
+    
+    // each will occour on a separate thread on the gpu
+    istart  =   blockIdx.x * blockDim.x + threadIdx.x;
+    istride =   blockDim.x * gridDim.x;
+
+    for ( i = istart; i < n; i += istride )
+    {
+        // zero matrix
+        for ( j = 0; j < n; j ++ ) prop_d[ i*n + j] = MAGMA_ZERO;
+        // P = exp(iwt/hbar)
+        arg   = w_d[i] * dt / HBAR;
+        prop_d[ i*n + i ] = MAGMA_MAKE( cos(arg), sin(arg) );
+    }
+}
+
+
+// initialize the F matrix on the gpu to the unit matrix
+__global__
+void makeI ( user_complex_t *mat, int n )
+{
+    int istart, istride, i, j;
+    
+    // each will occour on a separate thread on the gpu
+    istart  =   blockIdx.x * blockDim.x + threadIdx.x;
+    istride =   blockDim.x * gridDim.x;
+
+    // convert from float to complex
+    for ( i = istart; i < n; i += istride )
+    {
+        for ( j = 0; j < n; j++ ) mat[ i*n + j ] = MAGMA_ZERO;
+        mat[ i * n + i ] = MAGMA_ONE;
+    }
+}
+
 
 // parse input file to setup calculation
 void ir_init( char *argv[], char gmxf[], char cptf[], char outf[], char model[], int *ifintmeth, user_real_t *dt, int *ntcfpoints, 

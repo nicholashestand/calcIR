@@ -42,6 +42,7 @@ typedef magmaFloatComplex user_complex_t;
 #define CP_WRITE 0
 #define CP_READ  1
 #define CP_INIT  2
+#define CHK_ERR if (Cuerr != cudaSuccess ) { printf(">>> ERROR on CUDA: %s.\n", cudaGetErrorString(Cuerr)); exit(EXIT_FAILURE);}
 
 // FUNCTIONS
 
@@ -60,6 +61,14 @@ void get_spectral_density( user_real_t *w, user_real_t *MUX, user_real_t *MUY, u
 
 __global__
 void cast_to_complex_GPU( user_real_t *s_d, user_complex_t *c_d, magma_int_t n );
+
+
+__global__
+void makeI ( user_complex_t *mat, int n );
+
+
+__global__
+void Pinit ( user_complex_t *prop_d, user_real_t *w_d, int n, user_real_t dt );
 
 
 __host__ __device__
