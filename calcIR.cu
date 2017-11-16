@@ -232,6 +232,11 @@ int main(int argc, char *argv[])
     nchrom       = nmol * nchrom_mol;
     nchrom2      = (magma_int_t) nchrom*nchrom;
 
+    // whether to allocate space for some nchrom2 sized GPU variables now or later to save space
+    int          ALLOCATE_LATER;
+    if ( nchrom2 > 8000*8000   ) ALLOCATE_LATER = 1;
+    else ALLOCATE_LATER = 0;
+
     printf(">>> Found %d atoms and %d molecules.\n",natoms, nmol);
     printf(">>> Found %d chromophores.\n",nchrom);
 
@@ -256,11 +261,11 @@ int main(int argc, char *argv[])
     cudaError_t Cuerr;
     Cuerr = cudaMalloc( &x_d      , natoms       *sizeof(x[0])); CHK_ERR;
     Cuerr = cudaMalloc( &Ftcf_d   , ntcfpointsR  *sizeof(user_real_t)); CHK_ERR;
+    Cuerr = cudaMalloc( &tcf_d    , ntcfpoints   *sizeof(user_complex_t)); CHK_ERR;
     Cuerr = cudaMalloc( &mux_d    , nchrom       *sizeof(user_real_t)); CHK_ERR;
     Cuerr = cudaMalloc( &muy_d    , nchrom       *sizeof(user_real_t)); CHK_ERR;
     Cuerr = cudaMalloc( &muz_d    , nchrom       *sizeof(user_real_t)); CHK_ERR;
     Cuerr = cudaMalloc( &eproj_d  , nchrom       *sizeof(user_real_t)); CHK_ERR;
-    Cuerr = cudaMalloc( &kappa_d  , nchrom2      *sizeof(user_real_t)); CHK_ERR;
     Cuerr = cudaMalloc( &cmux_d   , nchrom       *sizeof(user_complex_t)); CHK_ERR;
     Cuerr = cudaMalloc( &cmuy_d   , nchrom       *sizeof(user_complex_t)); CHK_ERR;
     Cuerr = cudaMalloc( &cmuz_d   , nchrom       *sizeof(user_complex_t)); CHK_ERR;
@@ -268,10 +273,16 @@ int main(int argc, char *argv[])
     Cuerr = cudaMalloc( &cmuy0_d  , nchrom       *sizeof(user_complex_t)); CHK_ERR;
     Cuerr = cudaMalloc( &cmuz0_d  , nchrom       *sizeof(user_complex_t)); CHK_ERR;
     Cuerr = cudaMalloc( &tmpmu_d  , nchrom       *sizeof(user_complex_t)); CHK_ERR;
-    Cuerr = cudaMalloc( &ckappa_d , nchrom2      *sizeof(user_complex_t)); CHK_ERR;
+
+    if ( !ALLOCATE_LATER )
+    {
+        Cuerr = cudaMalloc( &kappa_d  , nchrom2      *sizeof(user_real_t)); CHK_ERR;
+        Cuerr = cudaMalloc( &ckappa_d , nchrom2      *sizeof(user_complex_t)); CHK_ERR;
+        Cuerr = cudaMalloc( &ctmpmat_d, nchrom2      *sizeof(user_complex_t)); CHK_ERR;
+    }
+    // for checkpoint to work, F_d has to be allocated now -- TODO: CAN YOU CHANGE THIS??
     Cuerr = cudaMalloc( &F_d      , nchrom2      *sizeof(user_complex_t)); CHK_ERR;
-    Cuerr = cudaMalloc( &ctmpmat_d, nchrom2      *sizeof(user_complex_t)); CHK_ERR;
-    Cuerr = cudaMalloc( &tcf_d    , ntcfpoints   *sizeof(user_complex_t)); CHK_ERR;
+
 
 
     // memory for spectral density calculation, if requested
@@ -298,7 +309,7 @@ int main(int argc, char *argv[])
     // memory for integration of F depending on which method is used
     if ( ifintmeth == 0 ) // exact
     {
-        Cuerr = cudaMalloc( &prop_d  , nchrom2      *sizeof(user_complex_t)); CHK_ERR;
+        if ( !ALLOCATE_LATER ) Cuerr = cudaMalloc( &prop_d  , nchrom2      *sizeof(user_complex_t)); CHK_ERR;
     }
     else if ( ifintmeth == 1 ) // adams integration
     {
@@ -382,6 +393,9 @@ int main(int argc, char *argv[])
             }
             cudaMemcpy( x_d, x, natoms*sizeof(x[0]), cudaMemcpyHostToDevice );
             boxl = box[0][0];
+
+            // allocate space for hamiltonian, if not allocated originally
+            if ( ALLOCATE_LATER ) Cuerr = cudaMalloc( &kappa_d  , nchrom2      *sizeof(user_real_t)); CHK_ERR;
 
             // launch kernel to calculate the electric field projection along OH bonds and build the exciton hamiltonian
             get_eproj_GPU <<<numBlocks,blockSize>>> ( x_d, boxl, natoms, natom_mol, nchrom, nchrom_mol, nmol, imodel, eproj_d );
@@ -498,11 +512,25 @@ int main(int argc, char *argv[])
             // ---------------------------------------------------- //
             // ***           Time Correlation Function          *** //
 
+
+            // allocate space for complex hamiltonian, if not done already
+            if ( ALLOCATE_LATER ) Cuerr = cudaMalloc( &ckappa_d , nchrom2      *sizeof(user_complex_t)); CHK_ERR;
+
+
             // cast variables to complex to calculate time correlation function (which is complex)
             cast_to_complex_GPU <<<numBlocks,blockSize>>> ( kappa_d, ckappa_d, nchrom2);
             cast_to_complex_GPU <<<numBlocks,blockSize>>> ( mux_d  , cmux_d  , nchrom );
             cast_to_complex_GPU <<<numBlocks,blockSize>>> ( muy_d  , cmuy_d  , nchrom );
             cast_to_complex_GPU <<<numBlocks,blockSize>>> ( muz_d  , cmuz_d  , nchrom );
+
+
+            // free float hamiltonian since we won't need it from here and allocate space for the rest of the variables
+            if ( ALLOCATE_LATER ) 
+            {
+                cudaFree( kappa_d );
+                Cuerr = cudaMalloc( &ctmpmat_d, nchrom2      *sizeof(user_complex_t)); CHK_ERR;
+                Cuerr = cudaMalloc( &prop_d   , nchrom2      *sizeof(user_complex_t)); CHK_ERR;
+            }
 
 
             // ---------------------------------------------------- //
@@ -713,6 +741,13 @@ int main(int argc, char *argv[])
             // ***        Done with Time Correlation            *** //
             // ---------------------------------------------------- //
 
+            // if size is big, free matrices here so can do the next diagonalization.
+            if ( ALLOCATE_LATER )
+            {
+                cudaFree( ckappa_d );
+                cudaFree( prop_d );
+                cudaFree( ctmpmat_d );
+            }
 
             // update progress bar if simulation is big enough, otherwise it really isn't necessary
             if ( nchrom > 400 && !interrupted )
@@ -843,11 +878,12 @@ int main(int argc, char *argv[])
 
     cudaFree(x_d);
     cudaFree(Ftcf_d);
+    cudaFree(tcf_d);
+
     cudaFree(mux_d); 
     cudaFree(muy_d);
     cudaFree(muz_d);
     cudaFree(eproj_d);
-    cudaFree(kappa_d);
     cudaFree(cmux_d); 
     cudaFree(cmuy_d);
     cudaFree(cmuz_d);
@@ -855,10 +891,14 @@ int main(int argc, char *argv[])
     cudaFree(cmuy0_d);
     cudaFree(cmuz0_d);
     cudaFree(tmpmu_d);
-    cudaFree(ckappa_d); 
     cudaFree(F_d);
-    cudaFree(ctmpmat_d);
-    cudaFree(tcf_d);
+
+    if ( !ALLOCATE_LATER )
+    {
+        cudaFree(kappa_d);
+        cudaFree(ckappa_d); 
+        cudaFree(ctmpmat_d);
+    }
 
     magma_free(pdtcf_d);
 
