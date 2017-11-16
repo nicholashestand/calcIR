@@ -28,6 +28,11 @@ int main(int argc, char *argv[])
         printf("Usage:\n\tInclude as the first argument either the name of an input file,  or a checkpoint\n\tfile with extension '.cpt' if restarting the calculation. No other arguments are\n\tallowed.\n");
         exit(EXIT_FAILURE);   
     }
+
+    // print info about gpu
+    cudaDeviceProp prop;
+    cudaGetDeviceProperties(&prop,0);
+    printf("\nGPU INFO:\n\tDevice name: %s\n\tMemory: %g gb\n",prop.name, (float) prop.totalGlobalMem/(1024*1024*1024));
     
 
     // register signal handler
@@ -424,7 +429,7 @@ int main(int argc, char *argv[])
                     size_t free, total;
                     cudaMemGetInfo( &free, &total );
                     printf(">>> cudaMemGetInfo returned free: %g gb, total %g gb.\n", (float) free/(1024*1024*1024), (float) total/(1024*1024*1024));
-                    printf(">>> %g gb needed by diagonalization routine.\n", (float) (lwork*sizeof(user_real_t)/(1024*1024*1024)));
+                    printf(">>> %g gb needed by diagonalization routine.\n", (float) (lwork * (float) sizeof(user_real_t)/(1024*1024*1024)));
                 }
 
 #ifdef USE_DOUBLES
