@@ -43,6 +43,8 @@ typedef magmaFloatComplex user_complex_t;
 #define CP_READ  1
 #define CP_INIT  2
 #define CHK_ERR if (Cuerr != cudaSuccess ) { printf(">>> ERROR on CUDA: %s.\n", cudaGetErrorString(Cuerr)); exit(EXIT_FAILURE);}
+#define MALLOC_ERR { printf(">>> ERROR on CPU: out of memory.\n"); exit(EXIT_FAILURE);}
+#define CHK_MERR if (Merr != MAGMA_SUCCESS ) { printf(">>> ERROR on MAGMA: %s.\n", magma_strerror(Merr)); exit(EXIT_FAILURE);}
 
 // FUNCTIONS
 

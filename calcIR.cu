@@ -29,9 +29,11 @@ int main(int argc, char *argv[])
         exit(EXIT_FAILURE);   
     }
     
+
     // register signal handler
     signal( SIGINT, signal_handler );
     signal( SIGTERM, signal_handler );
+
 
     // ***              Variable Declaration            *** //
     // **************************************************** //
@@ -83,6 +85,7 @@ int main(int argc, char *argv[])
         checkpoint( argv, gmxf, cptf, outf, model, &ifintmeth, &dt, &ntcfpoints, &nsamples, &sampleEvery, &t1, 
                     &avef, &omegaStart, &omegaStop, &omegaStep, &natom_mol, &nchrom_mol, &nzeros, &beginTime,
                     &SPECD_FLAG, &max_int_steps, 0, 0, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, CP_INIT );
+
         // TODO: nsamples and t1 can be changed from the values in the checkpoint file...is there an easy way to do this?
         //printf("Enter the number of samples: ");
         //scanf("%d", &nsamples);
@@ -240,9 +243,9 @@ int main(int argc, char *argv[])
     magma_queue_create( 0, &queue ); 
 
     // CPU arrays
-    x       = (rvec*)            malloc( natoms       * sizeof(x[0] ));
-    Ftcf    = (user_real_t *)    calloc( ntcfpointsR  , sizeof(user_real_t));
-    tcf     = (user_complex_t *) calloc( ntcfpoints   , sizeof(user_complex_t));
+    x       = (rvec*)            malloc( natoms       * sizeof(x[0] )); if ( x == NULL ) MALLOC_ERR;
+    Ftcf    = (user_real_t *)    calloc( ntcfpointsR  , sizeof(user_real_t)); if ( Ftcf == NULL ) MALLOC_ERR;
+    tcf     = (user_complex_t *) calloc( ntcfpoints   , sizeof(user_complex_t)); if ( tcf == NULL ) MALLOC_ERR;
 
     // GPU arrays
     cudaError_t Cuerr;
@@ -270,9 +273,9 @@ int main(int argc, char *argv[])
     if ( SPECD_FLAG )
     {
         // CPU arrays
-        omega   = (user_real_t *)    malloc( nomega       * sizeof(user_real_t));
-        Sw      = (user_real_t *)    calloc( nomega       , sizeof(user_real_t));
-        tmpSw   = (user_real_t *)    malloc( nomega       * sizeof(user_real_t));
+        omega   = (user_real_t *)    malloc( nomega       * sizeof(user_real_t)); if ( omega == NULL ) MALLOC_ERR;
+        Sw      = (user_real_t *)    calloc( nomega       , sizeof(user_real_t)); if ( Ftcf  == NULL ) MALLOC_ERR;
+        tmpSw   = (user_real_t *)    malloc( nomega       * sizeof(user_real_t)); if ( tmpSw == NULL ) MALLOC_ERR;
 
         // GPU arrays
         Cuerr = cudaMalloc( &MUX_d   , nchrom       *sizeof(user_real_t)); CHK_ERR;
@@ -377,9 +380,7 @@ int main(int argc, char *argv[])
 
             // launch kernel to calculate the electric field projection along OH bonds and build the exciton hamiltonian
             get_eproj_GPU <<<numBlocks,blockSize>>> ( x_d, boxl, natoms, natom_mol, nchrom, nchrom_mol, nmol, imodel, eproj_d );
-
-            get_kappa_GPU <<<numBlocks,blockSize>>> ( x_d, boxl, natoms, natom_mol, nchrom, nchrom_mol, nmol, eproj_d, 
-                                                      kappa_d, mux_d, muy_d, muz_d, avef );
+            get_kappa_GPU <<<numBlocks,blockSize>>> ( x_d, boxl, natoms, natom_mol, nchrom, nchrom_mol, nmol, eproj_d, kappa_d, mux_d, muy_d, muz_d, avef );
 
 
             // ***          Done getting System Info            *** //
@@ -395,7 +396,6 @@ int main(int argc, char *argv[])
             if ( ifintmeth == 0 || SPECD_FLAG )
             {
 
-
                 // if the first time, query for optimal workspace dimensions
                 if ( SSYEVD_ALLOC_FLAG )
                 {
@@ -410,14 +410,15 @@ int main(int argc, char *argv[])
                     liwork  = aux_iwork[0];
 
                     // allocate work arrays, eigenvalues and other stuff
-                    w       = (user_real_t *)    malloc( nchrom       * sizeof(user_real_t));
-                    magma_imalloc_cpu   ( &iwork, liwork );
+                    w       = (user_real_t *)    malloc( nchrom       * sizeof(user_real_t)); if ( w == NULL ) MALLOC_ERR;
+                    int Merr;
+                    Merr = magma_imalloc_cpu   ( &iwork, liwork ); CHK_MERR; 
 #ifdef USE_DOUBLES
-                    magma_dmalloc_pinned( &wA , nchrom2 );
-                    magma_dmalloc_pinned( &work , lwork  );
+                    Merr = magma_dmalloc_pinned( &wA , nchrom2 ); CHK_MERR;
+                    Merr = magma_dmalloc_pinned( &work , lwork  ); CHK_MERR;
 #else
-                    magma_smalloc_pinned( &wA , nchrom2 );
-                    magma_smalloc_pinned( &work , lwork  );
+                    Merr = magma_smalloc_pinned( &wA , nchrom2 ); CHK_MERR;
+                    Merr = magma_smalloc_pinned( &work , lwork  ); CHK_MERR;
 #endif
                     SSYEVD_ALLOC_FLAG = 0;  // is allocated, so we won't need to do it again
                 }
@@ -429,6 +430,8 @@ int main(int argc, char *argv[])
                 magma_ssyevd_gpu( MagmaVec, MagmaUpper, (magma_int_t) nchrom, kappa_d, (magma_int_t) nchrom,
                                   w, wA, (magma_int_t) nchrom, work, lwork, iwork, liwork, &info );
 #endif
+                if ( info != 0 ){ printf("ERROR: magma_dsyevd_gpu returned info %lld.\n", info ); exit(EXIT_FAILURE);}
+
                 // copy eigenvalues to device memory
                 cudaMemcpy( w_d    , w    , nchrom*sizeof(user_real_t), cudaMemcpyHostToDevice );
             }
