@@ -92,6 +92,7 @@ int main(int argc, char *argv[])
         checkpoint( argv, gmxf, cptf, outf, model, &ifintmeth, &dt, &ntcfpoints, &nsamples, &sampleEvery, &t1, 
                     &avef, &omegaStart, &omegaStop, &omegaStep, &natom_mol, &nchrom_mol, &nzeros, &beginTime,
                     &SPECD_FLAG, &max_int_steps, 0, 0, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, CP_INIT );
+        // nsamples = 11; -- testing
     }
 
 
@@ -329,11 +330,6 @@ int main(int argc, char *argv[])
     // ***       Read State Info From Checkpoint        *** //
     // **************************************************** //
 
-    // allocate space for F matrix on GPU -- this has to be done here in case the 
-    // checkpoint file contains the F matrix, and cant be allocated/deallocated
-    // like the other 2d matrix variables
-    Cuerr = cudaMalloc( &F_d      , nchrom2      *sizeof(user_complex_t)); CHK_ERR;
-
     if ( strstr(argv[1], ".cpt") != NULL )
     {
         // read in checkpoint file
@@ -355,7 +351,7 @@ int main(int argc, char *argv[])
 
     while( currentSample < nsamples )
     {
-
+        // break; -- testing
         // search trajectory for current sample starting point
         xdrinfo = read_xtc( trj, natoms, &step, &gmxtime, box, x, &prec );
         if ( xdrinfo != 0 )
