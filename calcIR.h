@@ -1,8 +1,23 @@
+///     Header file for calcIR.cu program       ///
+
 #ifndef CALCIR_H
 #define CALCIR_H
 
-#include <xdrfile/xdrfile.h>
+// HEADERS
+
+#include <cufft.h>
+#include <math.h>
 #include "magma_v2.h"
+#include <unistd.h>
+#include <signal.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <time.h>
+#include <xdrfile/xdrfile.h>
+#include <xdrfile/xdrfile_xtc.h>
+
+// TYPES AND MAGMA REDEFINES
 
 #ifdef USE_DOUBLES
 
@@ -34,27 +49,32 @@ typedef magmaFloatComplex user_complex_t;
 
 #endif
 
-#define HBAR 5.308837367       // in cm-1 * ps
-#define PI   3.14159265359
+// CONSTANTS
+
+#define HBAR        5.308837367       // in cm-1 * ps
+#define PI          3.14159265359
 #define MAX_STR_LEN 80
-#define PSTR "||||||||||||||||||||||||||||||||||||||||||||||||||"
-#define PWID 50
-#define CP_WRITE 0
-#define CP_READ  1
-#define CP_INIT  2
-#define CHK_ERR if (Cuerr != cudaSuccess ) { printf(">>> ERROR on CUDA: %s.\n", cudaGetErrorString(Cuerr)); exit(EXIT_FAILURE);}
-#define MALLOC_ERR { printf(">>> ERROR on CPU: out of memory.\n"); exit(EXIT_FAILURE);}
-#define CHK_MERR if (Merr != MAGMA_SUCCESS ) { printf(">>> ERROR on MAGMA: %s.\n", magma_strerror(Merr)); exit(EXIT_FAILURE);}
+#define PSTR        "||||||||||||||||||||||||||||||||||||||||||||||||||"
+#define PWID        50
+#define CP_WRITE    0
+#define CP_READ     1
+#define CP_INIT     3
+#define CHK_ERR     if (Cuerr != cudaSuccess ) { printf(">>> ERROR on CUDA: %s.\n", cudaGetErrorString(Cuerr)); exit(EXIT_FAILURE);}
+#define MALLOC_ERR  { printf(">>> ERROR on CPU: out of memory.\n"); exit(EXIT_FAILURE);}
+#define CHK_MERR    if (Merr != MAGMA_SUCCESS ) { printf(">>> ERROR on MAGMA: %s.\n", magma_strerror(Merr)); exit(EXIT_FAILURE);}
+
 
 // FUNCTIONS
 
 __global__
-void get_eproj_GPU( rvec *x, float boxl, int natoms, int natom_mol, int nchrom, int nchrom_mol, int nmol, int model, user_real_t *eproj);
+void get_eproj_GPU( rvec *x, float boxx, float boxy, float boxz, int natoms, 
+                    int natom_mol, int nchrom, int nchrom_mol, int nmol, int model, user_real_t *eproj);
 
 
 __global__
-void get_kappa_GPU( rvec *x, float boxl, int natoms, int natom_mol, int nchrom, int nchrom_mol, int nmol, user_real_t *eproj,
-                    user_real_t *kappa, user_real_t *mux, user_real_t *muy, user_real_t *muz, user_real_t avef);
+void get_kappa_GPU( rvec *x, float boxx, float boxy, float boxz, int natoms, int natom_mol, 
+                    int nchrom, int nchrom_mol, int nmol, user_real_t *eproj, user_real_t *kappa, 
+                    user_real_t *mux, user_real_t *muy, user_real_t *muz, user_real_t avef);
 
 __global__
 void get_spectral_density( user_real_t *w, user_real_t *MUX, user_real_t *MUY, user_real_t *MUZ, user_real_t *omega, user_real_t *Sw,

@@ -1,82 +1,84 @@
-/*This is my first attempt to port my python ir program to cuda. 
- * It currently suffers from **very** slow excecution in python. 
- * I'm going to try to port it to cuda c */
+/*  This program calculates the OH stetch IR absorption spectrum
+ *  for coupled water from an MD trajectory. The exciton Hamilt-
+ *  onian is built using the maps developed by Skinner  and  co-
+ *  workers
+ */
 
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <math.h>
-#include <xdrfile/xdrfile.h>
-#include <xdrfile/xdrfile_xtc.h>
+
 #include "calcIR.h" 
-#include <complex.h>
-#include <time.h>
-#include <unistd.h>
-#include <signal.h>
 
-#include "magma_v2.h"
-#include <cufft.h>
 
-// Global variable to catch signals and write checkpoint file
+// Global variable to catch interrupt and terminate signals
 volatile sig_atomic_t interrupted=false;
+
+// TODO: ALLOW SOME PARAMETERS TO CHANGE WHEN STARTING FROM CPT, if desired
+// TODO: TEST MRRR diagonalization routine to see if faster
+// TODO: PUT IN FREQUENCY BINS
+
 
 int main(int argc, char *argv[])
 {
 
-    // Some help for starting the program
+
+    // Some help for starting the program. User must supply a single argument
     if ( argc != 2 ){
-        printf("Usage:\n\tInclude as the first argument either the name of an input file,  or a checkpoint\n\tfile with extension '.cpt' if restarting the calculation. No other arguments are\n\tallowed.\n");
+        printf("Usage:\n"
+               "\tInclude as the first argument either the name of an input file,  or a checkpoint\n"
+               "\tfile with extension '.cpt' if restarting the calculation. No other arguments are\n"
+               "\tallowed.\n");
         exit(EXIT_FAILURE);   
     }
 
-    // print info about gpu
+
+    // retrieve and print info about gpu
     cudaDeviceProp prop;
     cudaGetDeviceProperties(&prop,0);
-    printf("\nGPU INFO:\n\tDevice name: %s\n\tMemory: %g gb\n",prop.name, (float) prop.totalGlobalMem/(1024*1024*1024));
+    printf("\nGPU INFO:\n"
+           "\tDevice name: %s\n"
+           "\tMemory: %g gb\n",
+           prop.name, prop.totalGlobalMem/(1.E9));
     
 
-    // register signal handler
-    signal( SIGINT, signal_handler );
+    // register signal handler to take care of interruption and termination signals
+    signal( SIGINT,  signal_handler );
     signal( SIGTERM, signal_handler );
 
+
+    
 
     // ***              Variable Declaration            *** //
     // **************************************************** //
 
     printf("\n>>> Setting default parameters\n");
 
-    // Default values for user input
-    char          gmxf[MAX_STR_LEN]; 
-    strncpy( gmxf, "n216/traj_comp.xtc", MAX_STR_LEN );                   // trajectory file
-    char          outf[MAX_STR_LEN]; 
-    strncpy( outf, " ", MAX_STR_LEN );                                    // name for output files
-    char          cptf[MAX_STR_LEN]; 
-    strncpy( cptf, " ", MAX_STR_LEN );                                    // name for output files
-    char          model[MAX_STR_LEN];
-    strncpy( model, "tip4p", MAX_STR_LEN );
-    int           imodel        = 0;
+    // Model parameters
+    char          gmxf[MAX_STR_LEN]; strncpy( gmxf, " ", MAX_STR_LEN );   // trajectory file
+    char          outf[MAX_STR_LEN]; strncpy( outf, " ", MAX_STR_LEN );   // name for output files
+    char          cptf[MAX_STR_LEN]; strncpy( cptf, " ", MAX_STR_LEN );   // name for output files
+    char          model[MAX_STR_LEN];strncpy( model," ", MAX_STR_LEN );   // water model tip4p, tip4p2005, e3b2, e3b3
+    int           imodel        = 0;                                      // integer for water model
     int           SPECD_FLAG    = 1;                                      // calculate the spectral density
-    int           ifintmeth     = 0;
-    user_real_t   dt            = 0.010;                                  // dt between frames in xtc file (in ps)
+    int           ifintmeth     = 0;                                      // integration method, 0 exact, 1 adams-bashforth
     int           ntcfpoints    = 150 ;                                   // the number of tcf points for each spectrum
     int           nsamples      = 1   ;                                   // number of samples to average for the total spectrum
-    int           sampleEvery   = 10  ;                                   // sample a new configuration every sampleEvery ps. Note ntcfpoints*dt must be less than sampleEvery.
-    user_real_t   beginTime     = 0   ;                                   // the beginning time in ps to allow for equilibration
-
-    user_real_t   t1            = 0.260;                                  // relaxation time ( in ps )
-    user_real_t   avef          = 3415.2;                                 // the approximate average stretch frequency to get rid of high frequency oscillations in the time correlation function
+    int           sampleEvery   = 10  ;                                   // sample a new configuration every sampleEvery ps. Note the way the program is written, 
+                                                                          // ntcfpoints*dt must be less than sampleEvery.
     int           omegaStart    = 2000;                                   // starting frequency for spectral density
     int           omegaStop     = 5000;                                   // ending frequency for spectral density
     int           omegaStep     = 5;                                      // resolution for spectral density
-
     int           natom_mol     = 4;                                      // Atoms per water molecule  :: MODEL DEPENDENT
     int           nchrom_mol    = 2;                                      // Chromophores per molecule :: TWO for stretch -- ONE for bend
     int           nzeros        = 25600;                                  // zeros for padding fft
 
-    user_real_t   max_int_steps = 2.0;                                    // number of Adams integration steps between each dt
+    user_real_t   dt            = 0.010;                                  // dt between frames in xtc file (in ps)
+    user_real_t   beginTime     = 0   ;                                   // the beginning time in ps to allow for equilibration, if desired
+    user_real_t   t1            = 0.260;                                  // relaxation time ( in ps )
+    user_real_t   avef          = 3415.2;                                 // the approximate average stretch frequency to get rid of high
+                                                                          // frequency oscillations in the time correlation function
+    user_real_t   max_int_steps = 4.0;                                    // number of Adams integration steps between each dt
 
  
-    // get user input parameters
+    // read in model parameters
     if ( strstr(argv[1], ".cpt") == NULL )
     {
         // START FROM INPUT FILE
@@ -90,11 +92,8 @@ int main(int argc, char *argv[])
         checkpoint( argv, gmxf, cptf, outf, model, &ifintmeth, &dt, &ntcfpoints, &nsamples, &sampleEvery, &t1, 
                     &avef, &omegaStart, &omegaStop, &omegaStep, &natom_mol, &nchrom_mol, &nzeros, &beginTime,
                     &SPECD_FLAG, &max_int_steps, 0, 0, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, CP_INIT );
-
-        // TODO: nsamples and t1 can be changed from the values in the checkpoint file...is there an easy way to do this?
-        //printf("Enter the number of samples: ");
-        //scanf("%d", &nsamples);
     }
+
 
     // Print the parameters to stdout
     printf("\tSetting xtc file %s\n",                       gmxf        );
@@ -125,51 +124,56 @@ int main(int argc, char *argv[])
     printf("\tSetting equilibration time to %f (ps)\n",     beginTime   );
     printf("\tSetting max_int_steps to %f\n",               max_int_steps );
 #endif
- 
 
-    // Some variables and constants
-    int                 natoms, nmol, nchrom;
-    magma_int_t         nchrom2;
-    const int           ntcfpointsR     = ( nzeros + ntcfpoints - 1 ) * 2;              // number of points for the real fourier transform
-    const int           nomega          = ( omegaStop - omegaStart ) / omegaStep + 1;   // number of frequencies for the spectral density
-    int                 currentSample   = 0;                                            // current sample
-    int                 currentFrame    = 0;                                            // current frame
-
-    // set model to integer to pass to gpu kernel to test in if statement for remaking OM bond lengths
+    // set imodel based on model passed...if 1, reset OM lengths to tip4p lengths
     if ( strcmp( model, "tip4p2005" ) == 0 || strcmp( model, "e3b3" ) == 0 ) imodel = 1;
     else imodel = 0;
+ 
 
-    // Trajectory stuff for the CPU
+
+    // Useful variables and condstants
+    int                 natoms, nmol, nchrom;                                           // number of atoms, molecules, chromophores
+    int                 currentSample   = 0;                                            // current sample
+    int                 currentFrame    = 0;                                            // current frame
+    const int           ntcfpointsR     = ( nzeros + ntcfpoints - 1 ) * 2;              // number of points for the real fourier transform
+    const int           nomega          = ( omegaStop - omegaStart ) / omegaStep + 1;   // number of frequencies for the spectral density
+    magma_int_t         nchrom2;                                                        // nchrom squared
+
+
+    // Trajectory variables for the CPU
     rvec                *x;                                                             // Position vector
     matrix              box;                                                            // Box vectors
-    float               boxl, gmxtime, prec;                                            // Box lengths, time at current frame, precision of xtf file
+    float               gmxtime, prec;                                                  // Time at current frame, precision of xtf file
     int                 step, xdrinfo;                                                  // The current step number
 
-    // Some variables for the GPU
+
+    // GPU variables                 
+    const int           blockSize = 128;                                                // The number of threads to launch per block
     rvec                *x_d;                                                           // positions
-    user_real_t         *mux_d, *muy_d, *muz_d;                                         // transition dipole moments
+    user_real_t         *mux_d,   *muy_d,   *muz_d;                                     // transition dipole moments
     user_complex_t      *cmux0_d, *cmuy0_d, *cmuz0_d;                                   // complex version of the transition dipole moment at t=0 
-    user_complex_t      *cmux_d, *cmuy_d, *cmuz_d;                                      // complex versions of the transition dipole moment
+    user_complex_t      *cmux_d,  *cmuy_d,  *cmuz_d;                                    // complex versions of the transition dipole moment
     user_complex_t      *tmpmu_d;                                                       // to sum all polarizations
     user_real_t         *MUX_d, *MUY_d, *MUZ_d;                                         // transition dipole moments in the eigen basis
     user_real_t         *eproj_d;                                                       // the electric field projected along the oh bonds
     user_real_t         *kappa_d;                                                       // the hamiltonian on the GPU
-    const int           blockSize = 128;                                                // The number of threads to launch per block
 
 
-    // Variables for F matrix integration
+    // GPU variables for Adams integration
     user_complex_t      *k1_d, *k2_d, *k3_d, *k4_d;                                     // Adams integration variables
     int                 order_counter = 0 ;                                             // To keep track of the current order of the Adams method
 
-    // magma variables for ssyevr
+
+    // magma variables for ssyevd
     user_real_t         aux_work[1];                                                    // To get optimal size of lwork
     magma_int_t         aux_iwork[1], info;                                             // To get optimal liwork, and return info
-    magma_int_t         lwork, liwork;                                         // Leading dim of kappa, sizes of work arrays
+    magma_int_t         lwork, liwork;                                                  // Leading dim of kappa, sizes of work arrays
     magma_int_t         *iwork;                                                         // Work array
     user_real_t         *work;                                                          // Work array
     user_real_t         *w   ;                                                          // Eigenvalues
     user_real_t         *wA  ;                                                          // Work array
     int                 SSYEVD_ALLOC_FLAG = 1;                                          // flag whether to allocate ssyevr arrays -- it is turned off after they are allocated
+
 
     // magma variables for gemv
     magma_queue_t       queue;
@@ -194,15 +198,22 @@ int main(int argc, char *argv[])
     // For fft on gpu
     cufftHandle         plan;
 
-    // for timing
+    // for timing and errors
     time_t              start=time(NULL), end;
+    cudaError_t         Cuerr;
+    int                 Merr;
+    size_t              freem, total;
+    int                 ALLOCATE_2DGPU_ONCE = 0;
 
     // for file output
     FILE *rtcf;
     FILE *itcf;
     FILE *spec_density;
     FILE *spec_lineshape; 
+    char *fname;
+    fname = (char *) malloc( strlen(outf) + 9 );
     user_real_t factor;                                                                 // conversion factor to give energy and correct intensity from FFT
+    user_real_t freq;
     
 
     // **************************************************** //
@@ -216,27 +227,22 @@ int main(int argc, char *argv[])
     // ***          Begin main routine                  *** //
     // **************************************************** //
 
-    // Open trajectory file and get info about the systeem
 
+    // Open trajectory file and get info about the systeem
     XDRFILE *trj = xdrfile_open( gmxf, "r" ); 
     if ( trj == NULL )
     {
         printf("WARNING: The file %s could not be opened. Is the name correct?\n", gmxf);
         exit(EXIT_FAILURE);
     }
-    printf(">>> Will read the trajectory from: %s.\n",gmxf);
-
 
     read_xtc_natoms( (char *)gmxf, &natoms);
     nmol         = natoms / natom_mol;
     nchrom       = nmol * nchrom_mol;
     nchrom2      = (magma_int_t) nchrom*nchrom;
+    if ( nchrom < 6000 ) ALLOCATE_2DGPU_ONCE = 1;
 
-    // whether to allocate space for some nchrom2 sized GPU variables now or later to save space
-    int          ALLOCATE_LATER;
-    if ( nchrom2 > 8000*8000   ) ALLOCATE_LATER = 1;
-    else ALLOCATE_LATER = 0;
-
+    printf(">>> Will read the trajectory from: %s.\n",gmxf);
     printf(">>> Found %d atoms and %d molecules.\n",natoms, nmol);
     printf(">>> Found %d chromophores.\n",nchrom);
 
@@ -248,42 +254,43 @@ int main(int argc, char *argv[])
     // each thread takes care of one chromophore for building the electric field and Hamiltonian
     const int numBlocks = (nchrom+blockSize-1)/blockSize;
     
-    // Initialize magma math library and initialize queue
-    magma_init();
-    magma_queue_create( 0, &queue ); 
+    // Initialize magma math library and queue
+    magma_init(); magma_queue_create( 0, &queue ); 
 
     // CPU arrays
-    x       = (rvec*)            malloc( natoms       * sizeof(x[0] )); if ( x == NULL ) MALLOC_ERR;
-    Ftcf    = (user_real_t *)    calloc( ntcfpointsR  , sizeof(user_real_t)); if ( Ftcf == NULL ) MALLOC_ERR;
-    tcf     = (user_complex_t *) calloc( ntcfpoints   , sizeof(user_complex_t)); if ( tcf == NULL ) MALLOC_ERR;
+    x       = (rvec*)            malloc( natoms       * sizeof(x[0] ));             if ( x == NULL )    MALLOC_ERR;
+    tcf     = (user_complex_t *) calloc( ntcfpoints   , sizeof(user_complex_t));    if ( tcf == NULL )  MALLOC_ERR;
+    Ftcf    = (user_real_t *)    calloc( ntcfpointsR  , sizeof(user_real_t));       if ( Ftcf == NULL ) MALLOC_ERR;
 
     // GPU arrays
-    cudaError_t Cuerr;
-    Cuerr = cudaMalloc( &x_d      , natoms       *sizeof(x[0])); CHK_ERR;
-    Cuerr = cudaMalloc( &Ftcf_d   , ntcfpointsR  *sizeof(user_real_t)); CHK_ERR;
-    Cuerr = cudaMalloc( &tcf_d    , ntcfpoints   *sizeof(user_complex_t)); CHK_ERR;
-    Cuerr = cudaMalloc( &mux_d    , nchrom       *sizeof(user_real_t)); CHK_ERR;
-    Cuerr = cudaMalloc( &muy_d    , nchrom       *sizeof(user_real_t)); CHK_ERR;
-    Cuerr = cudaMalloc( &muz_d    , nchrom       *sizeof(user_real_t)); CHK_ERR;
-    Cuerr = cudaMalloc( &eproj_d  , nchrom       *sizeof(user_real_t)); CHK_ERR;
-    Cuerr = cudaMalloc( &cmux_d   , nchrom       *sizeof(user_complex_t)); CHK_ERR;
-    Cuerr = cudaMalloc( &cmuy_d   , nchrom       *sizeof(user_complex_t)); CHK_ERR;
-    Cuerr = cudaMalloc( &cmuz_d   , nchrom       *sizeof(user_complex_t)); CHK_ERR;
-    Cuerr = cudaMalloc( &cmux0_d  , nchrom       *sizeof(user_complex_t)); CHK_ERR;
-    Cuerr = cudaMalloc( &cmuy0_d  , nchrom       *sizeof(user_complex_t)); CHK_ERR;
-    Cuerr = cudaMalloc( &cmuz0_d  , nchrom       *sizeof(user_complex_t)); CHK_ERR;
-    Cuerr = cudaMalloc( &tmpmu_d  , nchrom       *sizeof(user_complex_t)); CHK_ERR;
+    Cuerr = cudaMalloc( &x_d      , natoms       *sizeof(x[0]));            CHK_ERR;
+    Cuerr = cudaMalloc( &eproj_d  , nchrom       *sizeof(user_real_t));     CHK_ERR;
+    Cuerr = cudaMalloc( &Ftcf_d   , ntcfpointsR  *sizeof(user_real_t));     CHK_ERR;
+    Cuerr = cudaMalloc( &tcf_d    , ntcfpoints   *sizeof(user_complex_t));  CHK_ERR;
+    Cuerr = cudaMalloc( &mux_d    , nchrom       *sizeof(user_real_t));     CHK_ERR;
+    Cuerr = cudaMalloc( &muy_d    , nchrom       *sizeof(user_real_t));     CHK_ERR;
+    Cuerr = cudaMalloc( &muz_d    , nchrom       *sizeof(user_real_t));     CHK_ERR;
+    Cuerr = cudaMalloc( &cmux_d   , nchrom       *sizeof(user_complex_t));  CHK_ERR;
+    Cuerr = cudaMalloc( &cmuy_d   , nchrom       *sizeof(user_complex_t));  CHK_ERR;
+    Cuerr = cudaMalloc( &cmuz_d   , nchrom       *sizeof(user_complex_t));  CHK_ERR;
+    Cuerr = cudaMalloc( &cmux0_d  , nchrom       *sizeof(user_complex_t));  CHK_ERR;
+    Cuerr = cudaMalloc( &cmuy0_d  , nchrom       *sizeof(user_complex_t));  CHK_ERR;
+    Cuerr = cudaMalloc( &cmuz0_d  , nchrom       *sizeof(user_complex_t));  CHK_ERR;
+    Cuerr = cudaMalloc( &tmpmu_d  , nchrom       *sizeof(user_complex_t));  CHK_ERR;
 
-    if ( !ALLOCATE_LATER )
+    // F_d is persistant so alloacate here
+    Cuerr = cudaMalloc( &F_d      , nchrom2      *sizeof(user_complex_t)); CHK_ERR;
+
+    // Only allocate temporary non-persistant 2D arrays if the system is small enough
+    // Otherwise we have to more actively manage memory to avoid 
+    // going over the GPU max memory (4 GB on M1200)
+    if ( ALLOCATE_2DGPU_ONCE )
     {
         Cuerr = cudaMalloc( &kappa_d  , nchrom2      *sizeof(user_real_t)); CHK_ERR;
         Cuerr = cudaMalloc( &ckappa_d , nchrom2      *sizeof(user_complex_t)); CHK_ERR;
         Cuerr = cudaMalloc( &ctmpmat_d, nchrom2      *sizeof(user_complex_t)); CHK_ERR;
+        if ( ifintmeth == 0 ) Cuerr = cudaMalloc( &prop_d   , nchrom2      *sizeof(user_complex_t)); CHK_ERR;
     }
-    // for checkpoint to work, F_d has to be allocated now -- TODO: CAN YOU CHANGE THIS??
-    Cuerr = cudaMalloc( &F_d      , nchrom2      *sizeof(user_complex_t)); CHK_ERR;
-
-
 
     // memory for spectral density calculation, if requested
     if ( SPECD_FLAG )
@@ -306,12 +313,8 @@ int main(int argc, char *argv[])
     }
  
 
-    // memory for integration of F depending on which method is used
-    if ( ifintmeth == 0 ) // exact
-    {
-        if ( !ALLOCATE_LATER ) Cuerr = cudaMalloc( &prop_d  , nchrom2      *sizeof(user_complex_t)); CHK_ERR;
-    }
-    else if ( ifintmeth == 1 ) // adams integration
+    // memory for integration of F if adams integration is used
+    if ( ifintmeth == 1 ) // adams integration
     {
         Cuerr = cudaMalloc( &k1_d    , nchrom2      *sizeof(user_complex_t)); CHK_ERR;
         Cuerr = cudaMalloc( &k2_d    , nchrom2      *sizeof(user_complex_t)); CHK_ERR;
@@ -325,8 +328,15 @@ int main(int argc, char *argv[])
 
     // ***       Read State Info From Checkpoint        *** //
     // **************************************************** //
+
+    // allocate space for F matrix on GPU -- this has to be done here in case the 
+    // checkpoint file contains the F matrix, and cant be allocated/deallocated
+    // like the other 2d matrix variables
+    Cuerr = cudaMalloc( &F_d      , nchrom2      *sizeof(user_complex_t)); CHK_ERR;
+
     if ( strstr(argv[1], ".cpt") != NULL )
     {
+        // read in checkpoint file
         checkpoint( argv, gmxf, cptf, outf, model, &ifintmeth, &dt, &ntcfpoints, &nsamples, &sampleEvery, &t1, 
                     &avef, &omegaStart, &omegaStop, &omegaStep, &natom_mol, &nchrom_mol, &nzeros, &beginTime,
                     &SPECD_FLAG, &max_int_steps, nchrom, nomega, &currentSample, &currentFrame, tcf, Sw, F_d, 
@@ -337,22 +347,22 @@ int main(int argc, char *argv[])
 
 
     
+    printf("\n>>> Now calculating the absorption spectrum\n");
+    printf("----------------------------------------------------------\n");
+
     // **************************************************** //
     // ***          OUTER LOOP OVER SAMPLES             *** //
 
-    printf("\n>>> Now calculate the absorption spectrum\n");
-    printf("----------------------------------------------------------\n");
-
-
     while( currentSample < nsamples )
     {
+
         // search trajectory for current sample starting point
         xdrinfo = read_xtc( trj, natoms, &step, &gmxtime, box, x, &prec );
-
         if ( xdrinfo != 0 )
         {
-            printf("WARNING:: read_xtc returned error %d.\nIs the trajectory long enough?\n", xdrinfo);
-            exit(0);
+            printf("WARNING:: read_xtc returned error %d.\n"
+                   "Is the trajectory long enough?\n", xdrinfo);
+            exit(EXIT_FAILURE);
         }
 
         if ( currentSample * sampleEvery + (int) beginTime == (int) gmxtime )
@@ -361,7 +371,7 @@ int main(int argc, char *argv[])
             fflush(stdout);
 
             // If starting from checkpoint, fast forward the trajectory until you are at the correct frame 
-            if ( currentFrame != 0 ) for ( int i = 0; i < currentFrame -1 ; i++ ) read_xtc( trj, natoms, &step, &gmxtime, box, x, &prec );
+            if ( currentFrame != 0 ) for ( int i = 0; i < currentFrame - 1 ; i++ ) read_xtc( trj, natoms, &step, &gmxtime, box, x, &prec );
 
 
         // **************************************************** //
@@ -369,7 +379,7 @@ int main(int argc, char *argv[])
         while( currentFrame < ntcfpoints )
         {
  
-            // If the program has recieved a signal, write the current state and exit
+            // If the program has recieved an interrupt or termination signal, write the current state and exit
             if ( interrupted )
             {
                 checkpoint( argv, gmxf, cptf, outf, model, &ifintmeth, &dt, &ntcfpoints, &nsamples, &sampleEvery, &t1, 
@@ -387,19 +397,15 @@ int main(int argc, char *argv[])
 
             // read the current frame from the trajectory file and copy to device memory
             // note it was read in the outer loop if we are at frame 0
-            // also assume a square box, but this will need to be changed if it is not the case
-            if ( currentFrame != 0 ){
-                read_xtc( trj, natoms, &step, &gmxtime, box, x, &prec );
-            }
+            if ( currentFrame != 0 ) read_xtc( trj, natoms, &step, &gmxtime, box, x, &prec );
             cudaMemcpy( x_d, x, natoms*sizeof(x[0]), cudaMemcpyHostToDevice );
-            boxl = box[0][0];
 
-            // allocate space for hamiltonian, if not allocated originally
-            if ( ALLOCATE_LATER ) Cuerr = cudaMalloc( &kappa_d  , nchrom2      *sizeof(user_real_t)); CHK_ERR;
+            // allocate space for hamiltonian on the GPU if acively managing GPU memory
+            if ( !ALLOCATE_2DGPU_ONCE ) Cuerr = cudaMalloc( &kappa_d  , nchrom2      *sizeof(user_real_t)); CHK_ERR;
 
             // launch kernel to calculate the electric field projection along OH bonds and build the exciton hamiltonian
-            get_eproj_GPU <<<numBlocks,blockSize>>> ( x_d, boxl, natoms, natom_mol, nchrom, nchrom_mol, nmol, imodel, eproj_d );
-            get_kappa_GPU <<<numBlocks,blockSize>>> ( x_d, boxl, natoms, natom_mol, nchrom, nchrom_mol, nmol, eproj_d, kappa_d, mux_d, muy_d, muz_d, avef );
+            get_eproj_GPU <<<numBlocks,blockSize>>> ( x_d, box[0][0], box[1][1], box[2][2], natoms, natom_mol, nchrom, nchrom_mol, nmol, imodel, eproj_d );
+            get_kappa_GPU <<<numBlocks,blockSize>>> ( x_d, box[0][0], box[1][1], box[2][2], natoms, natom_mol, nchrom, nchrom_mol, nmol, eproj_d, kappa_d, mux_d, muy_d, muz_d, avef );
 
 
             // ***          Done getting System Info            *** //
@@ -430,20 +436,23 @@ int main(int argc, char *argv[])
 
                     // allocate work arrays, eigenvalues and other stuff
                     w       = (user_real_t *)    malloc( nchrom       * sizeof(user_real_t)); if ( w == NULL ) MALLOC_ERR;
-                    int Merr;
+
                     Merr = magma_imalloc_cpu   ( &iwork, liwork ); CHK_MERR; 
 #ifdef USE_DOUBLES
-                    Merr = magma_dmalloc_pinned( &wA , nchrom2 ); CHK_MERR;
+                    Merr = magma_dmalloc_pinned( &wA , nchrom2 ) ; CHK_MERR;
                     Merr = magma_dmalloc_pinned( &work , lwork  ); CHK_MERR;
 #else
-                    Merr = magma_smalloc_pinned( &wA , nchrom2 ); CHK_MERR;
+                    Merr = magma_smalloc_pinned( &wA , nchrom2 ) ; CHK_MERR;
                     Merr = magma_smalloc_pinned( &work , lwork  ); CHK_MERR;
 #endif
-                    SSYEVD_ALLOC_FLAG = 0;  // is allocated, so we won't need to do it again
-                    size_t free, total;
-                    cudaMemGetInfo( &free, &total );
-                    printf(">>> cudaMemGetInfo returned free: %g gb, total %g gb.\n", (float) free/(1024*1024*1024), (float) total/(1024*1024*1024));
-                    printf(">>> %g gb needed by diagonalization routine.\n", (float) (lwork * (float) sizeof(user_real_t)/(1024*1024*1024)));
+                    SSYEVD_ALLOC_FLAG = 0;      // is allocated here, so we won't need to do it again
+
+                    // get info about space needed for diagonalization
+                    cudaMemGetInfo( &freem, &total );
+                    printf("\n>>> cudaMemGetInfo returned\n"
+                           "\tfree:  %g gb\n"
+                           "\ttotal: %g gb\n", (float) freem/(1E9), (float) total/(1E9));
+                    printf(">>> %g gb needed by diagonalization routine.\n", (float) (lwork * (float) sizeof(user_real_t)/(1E9)));
                 }
 
 #ifdef USE_DOUBLES
@@ -513,9 +522,8 @@ int main(int argc, char *argv[])
             // ***           Time Correlation Function          *** //
 
 
-            // allocate space for complex hamiltonian, if not done already
-            if ( ALLOCATE_LATER ) Cuerr = cudaMalloc( &ckappa_d , nchrom2      *sizeof(user_complex_t)); CHK_ERR;
-
+            // allocate space for complex hamiltonian if actively managing memory
+            if ( !ALLOCATE_2DGPU_ONCE ) Cuerr = cudaMalloc( &ckappa_d , nchrom2      *sizeof(user_complex_t)); CHK_ERR;
 
             // cast variables to complex to calculate time correlation function (which is complex)
             cast_to_complex_GPU <<<numBlocks,blockSize>>> ( kappa_d, ckappa_d, nchrom2);
@@ -523,13 +531,13 @@ int main(int argc, char *argv[])
             cast_to_complex_GPU <<<numBlocks,blockSize>>> ( muy_d  , cmuy_d  , nchrom );
             cast_to_complex_GPU <<<numBlocks,blockSize>>> ( muz_d  , cmuz_d  , nchrom );
 
-
-            // free float hamiltonian since we won't need it from here and allocate space for the rest of the variables
-            if ( ALLOCATE_LATER ) 
+            // free float hamiltonian since we won't need it from here and allocate space for the rest 
+            // of the 2D matrix variables that have not yet been allocated if actively managing memory
+            if ( !ALLOCATE_2DGPU_ONCE )
             {
                 cudaFree( kappa_d );
                 Cuerr = cudaMalloc( &ctmpmat_d, nchrom2      *sizeof(user_complex_t)); CHK_ERR;
-                Cuerr = cudaMalloc( &prop_d   , nchrom2      *sizeof(user_complex_t)); CHK_ERR;
+                if ( ifintmeth == 0 ) Cuerr = cudaMalloc( &prop_d   , nchrom2      *sizeof(user_complex_t)); CHK_ERR;
             }
 
 
@@ -698,6 +706,13 @@ int main(int argc, char *argv[])
             }
             // ***           Done updating the F matrix         *** //
 
+            // free 2d matrices if actively managing memory
+            if ( !ALLOCATE_2DGPU_ONCE )
+            {
+                cudaFree( ckappa_d );
+                cudaFree( ctmpmat_d );
+                if ( ifintmeth == 0 ) cudaFree( prop_d );
+            }
 
             // calculate mFm for x y and z components
             // tcfx = cmux0_d**T * F_d *cmux_d
@@ -741,19 +756,9 @@ int main(int argc, char *argv[])
             // ***        Done with Time Correlation            *** //
             // ---------------------------------------------------- //
 
-            // if size is big, free matrices here so can do the next diagonalization.
-            if ( ALLOCATE_LATER )
-            {
-                cudaFree( ckappa_d );
-                cudaFree( prop_d );
-                cudaFree( ctmpmat_d );
-            }
 
             // update progress bar if simulation is big enough, otherwise it really isn't necessary
-            if ( nchrom > 400 && !interrupted )
-            {
-                printProgress( currentFrame, ntcfpoints-1 );
-            }
+            if ( nchrom > 400 && !interrupted ) printProgress( currentFrame, ntcfpoints-1 );
             
             // done with current frame, move to next
             currentFrame += 1;
@@ -763,6 +768,7 @@ int main(int argc, char *argv[])
         currentSample +=1;
         currentFrame  = 0;
 
+        // checkpoint after every sample
         checkpoint( argv, gmxf, cptf, outf, model, &ifintmeth, &dt, &ntcfpoints, &nsamples, &sampleEvery, &t1, 
                     &avef, &omegaStart, &omegaStop, &omegaStep, &natom_mol, &nchrom_mol, &nzeros, &beginTime,
                     &SPECD_FLAG, &max_int_steps, nchrom, nomega, &currentSample, &currentFrame, tcf, Sw, F_d, 
@@ -788,12 +794,8 @@ int main(int argc, char *argv[])
         dcy      = MAGMA_MAKE(exp( -1.0 * i * dt / ( 2.0 * t1 )), 0.0);
         tcf[i]   = MAGMA_MUL( tcf[i], dcy );
         pdtcf[i] = MAGMA_DIV(tcf[i], MAGMA_MAKE( nsamples, 0.0 ));
-
     }
-    for ( int i = 0; i < nzeros; i++ )
-    {
-        pdtcf[i+ntcfpoints] = MAGMA_ZERO;
-    }
+    for ( int i = 0; i < nzeros; i++ ) pdtcf[i+ntcfpoints] = MAGMA_ZERO;
 
     cudaMalloc( &pdtcf_d  , (ntcfpoints+nzeros)*sizeof(user_complex_t));
     cudaMemcpy( pdtcf_d, pdtcf, (ntcfpoints+nzeros)*sizeof(user_complex_t), cudaMemcpyHostToDevice );
@@ -809,22 +811,9 @@ int main(int argc, char *argv[])
     cufftDestroy(plan);
 
 
-    // normalize spectra by number of samples
-    for ( int i = 0; i < ntcfpointsR; i++ )
-    {
-        Ftcf[i] = Ftcf[i] ;/// (user_real_t) nsamples; 
-    }
-    if ( SPECD_FLAG )
-    {
-        for ( int i = 0; i < nomega; i++)
-        {
-            Sw[i]   = Sw[i] / (user_real_t) nsamples;
-        }
-    }
+    // normalize spectral density by number of samples
+    if ( SPECD_FLAG ) for ( int i = 0; i < nomega; i++) Sw[i]   = Sw[i] / (user_real_t) nsamples;
 
-    // set base name for output files
-    char * fname;
-    fname = (char *) malloc( strlen(outf) + 9 );
 
     // write time correlation function
     rtcf = fopen(strcat(strcpy(fname,outf),"rtcf.dat"), "w");
@@ -837,34 +826,28 @@ int main(int argc, char *argv[])
     fclose( rtcf );
     fclose( itcf );
 
-    // write the spectral density to file
+    // write the spectral density
     if ( SPECD_FLAG )
     {
         spec_density = fopen(strcat(strcpy(fname,outf),"spdn.dat"), "w");
-        for ( int i = 0; i < nomega; i++)
-        {
-            fprintf(spec_density, "%g %g\n", omega[i], Sw[i]);
-        }
+        for ( int i = 0; i < nomega; i++) fprintf(spec_density, "%g %g\n", omega[i], Sw[i]);
         fclose(spec_density);
     }
 
-    // Write the absorption lineshape... Since the C2R transform is inverse by default, the frequencies have to be negated
-    // note if you need to compare with YICUN's code, divide Ftcf by 2
+    // Write the absorption lineshape
+    // Since the C2R transform is inverse by default, the frequencies have to be negated
+    // NOTE: to compare with YICUN's code, divide Ftcf by 2
     spec_lineshape = fopen(strcat(strcpy(fname,outf),"spec.dat"),"w");
-    factor         = 2*PI*HBAR/(dt*(ntcfpoints+nzeros));          // conversion factor to give energy and correct intensity from FFT
+    factor         = 2*PI*HBAR/(dt*(ntcfpoints+nzeros));                // conversion factor to give energy and correct intensity from FFT
     for ( int i = (ntcfpoints+nzeros)/2; i < ntcfpoints+nzeros; i++ )   // "negative" FFT frequencies
     {
-        if ( -1*(i-ntcfpoints-nzeros)*factor + avef <= (user_real_t) omegaStop  )
-        {
-            fprintf(spec_lineshape, "%g %g\n", -1*(i-ntcfpoints-nzeros)*factor + avef, Ftcf[i]/(factor*(ntcfpoints+nzeros)));// TO COMPARE WITH YICUN
-        }
+        freq = -1*(i-ntcfpoints-nzeros)*factor + avef;
+        if ( freq <= (user_real_t) omegaStop  ) fprintf(spec_lineshape, "%g %g\n", freq, Ftcf[i]/(factor*(ntcfpoints+nzeros)));
     }
     for ( int i = 0; i < ntcfpoints+nzeros / 2 ; i++)                   // "positive" FFT frequencies
     {
-        if ( -1*i*factor + avef >= (user_real_t) omegaStart)
-        {
-            fprintf(spec_lineshape, "%g %g\n", -1*i*factor + avef, Ftcf[i]/(factor*(ntcfpoints+nzeros)));// TO COMPARE WITH YICUN
-        }
+        freq = -1*i*factor + avef;
+        if ( freq >= (user_real_t) omegaStart) fprintf(spec_lineshape, "%g %g\n", freq, Ftcf[i]/(factor*(ntcfpoints+nzeros)));
     }
     fclose(spec_lineshape);
 
@@ -893,11 +876,12 @@ int main(int argc, char *argv[])
     cudaFree(tmpmu_d);
     cudaFree(F_d);
 
-    if ( !ALLOCATE_LATER )
+    if ( ALLOCATE_2DGPU_ONCE )
     {
         cudaFree(kappa_d);
-        cudaFree(ckappa_d); 
+        cudaFree(ckappa_d);
         cudaFree(ctmpmat_d);
+        if ( ifintmeth == 0 ) cudaFree(prop_d);
     }
 
     magma_free(pdtcf_d);
@@ -930,10 +914,6 @@ int main(int argc, char *argv[])
     }
  
     // free memory for integration of F depending on which method is used
-    if ( ifintmeth == 0 ) // only used for the exact integration method
-    {
-        cudaFree(prop_d);
-    }
     else if ( ifintmeth == 1 ) // only used for adams integration method
     {
         cudaFree(k1_d);
@@ -960,7 +940,8 @@ int main(int argc, char *argv[])
 
  **********************************************************/
 __global__
-void get_eproj_GPU( rvec *x, float boxl, int natoms, int natom_mol, int nchrom, int nchrom_mol, int nmol, int model, user_real_t  *eproj )
+void get_eproj_GPU( rvec *x, float boxx, float boxy, float boxz, int natoms, int natom_mol, 
+                    int nchrom, int nchrom_mol, int nmol, int model, user_real_t  *eproj )
 {
     
     int n, m, i, j, istart, istride;
@@ -1016,9 +997,9 @@ void get_eproj_GPU( rvec *x, float boxl, int natoms, int natom_mol, int nchrom, 
         nox[2]  = x[ n*natom_mol ][2];
 
         // The oh unit vector
-        nohx[0] = minImage( nhx[0] - nox[0], boxl );
-        nohx[1] = minImage( nhx[1] - nox[1], boxl );
-        nohx[2] = minImage( nhx[2] - nox[2], boxl );
+        nohx[0] = minImage( nhx[0] - nox[0], boxx );
+        nohx[1] = minImage( nhx[1] - nox[1], boxy );
+        nohx[2] = minImage( nhx[2] - nox[2], boxz );
         r       = mag3(nohx);
         nohx[0] /= r;
         nohx[1] /= r;
@@ -1045,9 +1026,9 @@ void get_eproj_GPU( rvec *x, float boxl, int natoms, int natom_mol, int nchrom, 
             mox[2] = x[ m*natom_mol ][2];
 
             // find displacement between oxygen on m and hydrogen on n
-            dr[0]  = minImage( mox[0] - nhx[0], boxl );
-            dr[1]  = minImage( mox[1] - nhx[1], boxl );
-            dr[2]  = minImage( mox[2] - nhx[2], boxl );
+            dr[0]  = minImage( mox[0] - nhx[0], boxx );
+            dr[1]  = minImage( mox[1] - nhx[1], boxy );
+            dr[2]  = minImage( mox[2] - nhx[2], boxz );
             r      = mag3(dr);
 
             // skip if the distance is greater than the cutoff
@@ -1068,9 +1049,9 @@ void get_eproj_GPU( rvec *x, float boxl, int natoms, int natom_mol, int nchrom, 
                     if ( model != 0 ) 
                     {
                         // get the OM unit vector
-                        mom[0] = minImage( mx[0] - mox[0], boxl);
-                        mom[1] = minImage( mx[1] - mox[1], boxl);
-                        mom[2] = minImage( mx[2] - mox[2], boxl);
+                        mom[0] = minImage( mx[0] - mox[0], boxx );
+                        mom[1] = minImage( mx[1] - mox[1], boxy );
+                        mom[2] = minImage( mx[2] - mox[2], boxz );
                         r      = mag3(mom);
 
                         // TIP4P OM distance is 0.015 nm along the OM bond
@@ -1082,9 +1063,9 @@ void get_eproj_GPU( rvec *x, float boxl, int natoms, int natom_mol, int nchrom, 
 
                 // the minimum image displacement between the reference hydrogen and the current atom
                 // NOTE: this converted to bohr so the efield will be in au
-                dr[0]  = minImage( nhx[0] - mx[0], boxl )*bohr_nm;
-                dr[1]  = minImage( nhx[1] - mx[1], boxl )*bohr_nm;
-                dr[2]  = minImage( nhx[2] - mx[2], boxl )*bohr_nm;
+                dr[0]  = minImage( nhx[0] - mx[0], boxx )*bohr_nm;
+                dr[1]  = minImage( nhx[1] - mx[1], boxy )*bohr_nm;
+                dr[2]  = minImage( nhx[2] - mx[2], boxz )*bohr_nm;
                 r      = mag3(dr);
 
                 // Add the contribution of the current atom to the electric field
@@ -1115,7 +1096,7 @@ void get_eproj_GPU( rvec *x, float boxl, int natoms, int natom_mol, int nchrom, 
 
  **********************************************************/
 __global__
-void get_kappa_GPU( rvec *x, float boxl, int natoms, int natom_mol, int nchrom, int nchrom_mol, int nmol, 
+void get_kappa_GPU( rvec *x, float boxx, float boxy, float boxz, int natoms, int natom_mol, int nchrom, int nchrom_mol, int nmol, 
                     user_real_t *eproj, user_real_t *kappa, user_real_t *mux, user_real_t *muy, user_real_t *muz, user_real_t avef)
 {
     
@@ -1175,18 +1156,18 @@ void get_kappa_GPU( rvec *x, float boxl, int natoms, int natom_mol, int nchrom, 
         }
 
         // The OH unit vector
-        noh[0] = minImage( nhx[0] - nox[0], boxl );
-        noh[1] = minImage( nhx[1] - nox[1], boxl );
-        noh[2] = minImage( nhx[2] - nox[2], boxl );
+        noh[0] = minImage( nhx[0] - nox[0], boxx );
+        noh[1] = minImage( nhx[1] - nox[1], boxy );
+        noh[2] = minImage( nhx[2] - nox[2], boxz );
         r      = mag3(noh);
         noh[0] /= r;
         noh[1] /= r;
         noh[2] /= r;
 
         // The location of the TDM
-        nmu[0] = minImage( nox[0] + 0.067 * noh[0], boxl );
-        nmu[1] = minImage( nox[1] + 0.067 * noh[1], boxl );
-        nmu[2] = minImage( nox[2] + 0.067 * noh[2], boxl );
+        nmu[0] = minImage( nox[0] + 0.067 * noh[0], boxx );
+        nmu[1] = minImage( nox[1] + 0.067 * noh[1], boxy );
+        nmu[2] = minImage( nox[2] + 0.067 * noh[2], boxz );
         
         // and the TDM vector to return
         mux[chromn] = noh[0] * nmuprime * xn;
@@ -1246,23 +1227,23 @@ void get_kappa_GPU( rvec *x, float boxl, int natoms, int natom_mol, int nchrom, 
                 }
 
                 // The OH unit vector
-                moh[0] = minImage( mhx[0] - mox[0], boxl );
-                moh[1] = minImage( mhx[1] - mox[1], boxl );
-                moh[2] = minImage( mhx[2] - mox[2], boxl );
+                moh[0] = minImage( mhx[0] - mox[0], boxx );
+                moh[1] = minImage( mhx[1] - mox[1], boxy );
+                moh[2] = minImage( mhx[2] - mox[2], boxz );
                 r      = mag3(moh);
                 moh[0] /= r;
                 moh[1] /= r;
                 moh[2] /= r;
 
                 // The location of the TDM and the dipole derivative
-                mmu[0] = minImage( mox[0] + 0.067 * moh[0], boxl );
-                mmu[1] = minImage( mox[1] + 0.067 * moh[1], boxl );
-                mmu[2] = minImage( mox[2] + 0.067 * moh[2], boxl );
+                mmu[0] = minImage( mox[0] + 0.067 * moh[0], boxx );
+                mmu[1] = minImage( mox[1] + 0.067 * moh[1], boxy );
+                mmu[2] = minImage( mox[2] + 0.067 * moh[2], boxz );
 
                 // the distance between TDM on N and on M and convert to unit vector
-                dr[0] = minImage( nmu[0] - mmu[0], boxl );
-                dr[1] = minImage( nmu[1] - mmu[1], boxl );
-                dr[2] = minImage( nmu[2] - mmu[2], boxl );
+                dr[0] = minImage( nmu[0] - mmu[0], boxx );
+                dr[1] = minImage( nmu[1] - mmu[1], boxy );
+                dr[2] = minImage( nmu[2] - mmu[2], boxz );
                 r     = mag3( dr );
                 dr[0] /= r;
                 dr[1] /= r;
@@ -1557,7 +1538,6 @@ void printProgress( int currentStep, int totalSteps )
 
 
 // Checkpoint the simulation
-// TODO: Things that don't need to be consistent -- t1, nzeros, nsamples, omega
 void checkpoint( char *argv[], char gmxf[], char cptf[], char outf[], char model[], int *ifintmeth, user_real_t *dt, int *ntcfpoints, 
                  int *nsamples, int *sampleEvery, user_real_t *t1, user_real_t *avef, int *omegaStart, int *omegaStop, int *omegaStep,
                  int *natom_mol, int *nchrom_mol, int *nzeros, user_real_t *beginTime, int *SPECD_FLAG, user_real_t *max_int_steps, int nchrom, int nomega,
@@ -1587,18 +1567,18 @@ void checkpoint( char *argv[], char gmxf[], char cptf[], char outf[], char model
         fwrite( model       , MAX_STR_LEN           , 1, cptfp );         // model
         fwrite( ifintmeth   , sizeof(int)           , 1, cptfp );         // integration method
         fwrite( ntcfpoints  , sizeof(int)           , 1, cptfp );         // number of tcf points
-        fwrite( nsamples    , sizeof(int)           , 1, cptfp );         // number of samples -- TODO: Doesn't need to be the same
+        fwrite( nsamples    , sizeof(int)           , 1, cptfp );         // number of samples
         fwrite( sampleEvery , sizeof(int)           , 1, cptfp );         // time between samples
         fwrite( omegaStart  , sizeof(int)           , 1, cptfp );         // omegaStart for spectral density
         fwrite( omegaStop   , sizeof(int)           , 1, cptfp );         // omegaStop  for spectral density
         fwrite( omegaStep   , sizeof(int)           , 1, cptfp );         // omegaStep  for spectral density
         fwrite( natom_mol   , sizeof(int)           , 1, cptfp );         // atoms per molecule
         fwrite( nchrom_mol  , sizeof(int)           , 1, cptfp );         // chromophores per molecule
-        fwrite( nzeros      , sizeof(int)           , 1, cptfp );         // number of zeros to pad the tcf before FT -- TODO: Doesn't need to be the same
+        fwrite( nzeros      , sizeof(int)           , 1, cptfp );         // number of zeros to pad the tcf before FT
         fwrite( SPECD_FLAG  , sizeof(int)           , 1, cptfp );         // switch to calculate spectral density
 
         fwrite( max_int_steps, sizeof(user_real_t)  , 1, cptfp );         // max integration steps if using adams/bashforth integration
-        fwrite( t1          , sizeof(user_real_t)   , 1, cptfp );         // relaxation time -- TODO: Doesn't need to be the same
+        fwrite( t1          , sizeof(user_real_t)   , 1, cptfp );         // relaxation time
         fwrite( dt          , sizeof(user_real_t)   , 1, cptfp );         // timestep
         fwrite( avef        , sizeof(user_real_t)   , 1, cptfp );         // average frequency
         fwrite( beginTime   , sizeof(user_real_t)   , 1, cptfp );         // time to start taking samples
