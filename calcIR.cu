@@ -91,7 +91,8 @@ int main(int argc, char *argv[])
         // START FROM CHECKPOINT FILE
         checkpoint( argv, gmxf, cptf, outf, model, &ifintmeth, &dt, &ntcfpoints, &nsamples, &sampleEvery, &t1, 
                     &avef, &omegaStart, &omegaStop, &omegaStep, &natom_mol, &nchrom_mol, &nzeros, &beginTime,
-                    &SPECD_FLAG, &max_int_steps, 0, 0, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, CP_INIT );
+                    &SPECD_FLAG, &max_int_steps, 0, 0, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, 
+                    NULL, NULL, NULL, NULL, NULL, NULL, CP_INIT );
         // nsamples = 11; -- testing
     }
 
@@ -152,8 +153,14 @@ int main(int argc, char *argv[])
     const int           blockSize = 128;                                                // The number of threads to launch per block
     rvec                *x_d;                                                           // positions
     user_real_t         *mux_d,   *muy_d,   *muz_d;                                     // transition dipole moments
+    user_real_t         *axx_d,   *ayy_d,   *azz_d;                                     // polarizability
+    user_real_t         *axy_d,   *ayz_d,   *azx_d;                                     // polarizability
     user_complex_t      *cmux0_d, *cmuy0_d, *cmuz0_d;                                   // complex version of the transition dipole moment at t=0 
-    user_complex_t      *cmux_d,  *cmuy_d,  *cmuz_d;                                    // complex versions of the transition dipole moment
+    user_complex_t      *cmux_d,  *cmuy_d,  *cmuz_d;                                    // complex version of the transition dipole moment
+    user_complex_t      *caxx0_d, *cayy0_d, *cazz0_d;                                   // complex version of the polarizability at t=0
+    user_complex_t      *caxy0_d, *cayz0_d, *cazx0_d;                                   // complex version of the polarizability at t=0
+    user_complex_t      *caxx_d,  *cayy_d,  *cazz_d;                                    // complex version of the polarizability
+    user_complex_t      *caxy_d,  *cayz_d,  *cazx_d;                                    // complex version of the polarizability
     user_complex_t      *tmpmu_d;                                                       // to sum all polarizations
     user_real_t         *MUX_d, *MUY_d, *MUZ_d;                                         // transition dipole moments in the eigen basis
     user_real_t         *eproj_d;                                                       // the electric field projected along the oh bonds
@@ -190,11 +197,16 @@ int main(int argc, char *argv[])
     user_complex_t      *prop_d;                                                        // Propigator matrix on GPU
     user_complex_t      *ctmpmat_d;                                                     // temporary complex matrix for matrix multiplications on gpu
     user_complex_t      *ckappa_d;                                                      // A complex version of kappa
-    user_complex_t      tcfx, tcfy, tcfz;                                               // Time correlation function, polarized
+    user_complex_t      tcfx, tcfy, tcfz;                                               // Time correlation function, polarized, ir
+    user_complex_t      tcfxx, tcfyy, tcfzz;                                            // Time correlation function, polarized, raman
+    user_complex_t      tcfxy, tcfyz, tcfzx;                                            // Time correlation function, polarized, raman
     user_complex_t      dcy, tcftmp;                                                    // Decay constant and a temporary variable for the tcf
     user_complex_t      *pdtcf, *pdtcf_d;                                               // padded time correlation functions
-    user_complex_t      *tcf, *tcf_d;                                                   // Time correlation function
+    user_complex_t      *tcf, *tcf_d;                                                   // Time correlation function IR
+    user_complex_t      *tcfvv, *tcfvv_d;                                               // Time correlation function VV raman
+    user_complex_t      *tcfvh, *tcfvh_d;                                               // Time correlation function VH raman
     user_real_t         *Ftcf, *Ftcf_d;                                                 // Fourier transformed time correlation function
+    user_real_t         *Ftcfvv, *Ftcfvh;
 
     // For fft on gpu
     cufftHandle         plan;
@@ -211,6 +223,8 @@ int main(int argc, char *argv[])
     FILE *itcf;
     FILE *spec_density;
     FILE *spec_lineshape; 
+    FILE *vv_lineshape; 
+    FILE *vh_lineshape; 
     char *fname;
     fname = (char *) malloc( strlen(outf) + 9 );
     user_real_t factor;                                                                 // conversion factor to give energy and correct intensity from FFT
@@ -259,15 +273,22 @@ int main(int argc, char *argv[])
     magma_init(); magma_queue_create( 0, &queue ); 
 
     // CPU arrays
-    x       = (rvec*)            malloc( natoms       * sizeof(x[0] ));             if ( x == NULL )    MALLOC_ERR;
-    tcf     = (user_complex_t *) calloc( ntcfpoints   , sizeof(user_complex_t));    if ( tcf == NULL )  MALLOC_ERR;
-    Ftcf    = (user_real_t *)    calloc( ntcfpointsR  , sizeof(user_real_t));       if ( Ftcf == NULL ) MALLOC_ERR;
+    x       = (rvec*)            malloc( natoms       * sizeof(x[0] ));             if ( x == NULL )      MALLOC_ERR;
+    tcf     = (user_complex_t *) calloc( ntcfpoints   , sizeof(user_complex_t));    if ( tcf == NULL )    MALLOC_ERR;
+    tcfvv   = (user_complex_t *) calloc( ntcfpoints   , sizeof(user_complex_t));    if ( tcfvv == NULL )  MALLOC_ERR;
+    tcfvh   = (user_complex_t *) calloc( ntcfpoints   , sizeof(user_complex_t));    if ( tcfvh == NULL )  MALLOC_ERR;
+    Ftcf    = (user_real_t *)    calloc( ntcfpointsR  , sizeof(user_real_t));       if ( Ftcf == NULL )   MALLOC_ERR;
+    Ftcfvv  = (user_real_t *)    calloc( ntcfpointsR  , sizeof(user_real_t));       if ( Ftcfvv == NULL ) MALLOC_ERR;
+    Ftcfvh  = (user_real_t *)    calloc( ntcfpointsR  , sizeof(user_real_t));       if ( Ftcfvh == NULL ) MALLOC_ERR;
+
 
     // GPU arrays
     Cuerr = cudaMalloc( &x_d      , natoms       *sizeof(x[0]));            CHK_ERR;
     Cuerr = cudaMalloc( &eproj_d  , nchrom       *sizeof(user_real_t));     CHK_ERR;
     Cuerr = cudaMalloc( &Ftcf_d   , ntcfpointsR  *sizeof(user_real_t));     CHK_ERR;
     Cuerr = cudaMalloc( &tcf_d    , ntcfpoints   *sizeof(user_complex_t));  CHK_ERR;
+    Cuerr = cudaMalloc( &tcfvv_d  , ntcfpoints   *sizeof(user_complex_t));  CHK_ERR;
+    Cuerr = cudaMalloc( &tcfvh_d  , ntcfpoints   *sizeof(user_complex_t));  CHK_ERR;
     Cuerr = cudaMalloc( &mux_d    , nchrom       *sizeof(user_real_t));     CHK_ERR;
     Cuerr = cudaMalloc( &muy_d    , nchrom       *sizeof(user_real_t));     CHK_ERR;
     Cuerr = cudaMalloc( &muz_d    , nchrom       *sizeof(user_real_t));     CHK_ERR;
@@ -278,6 +299,25 @@ int main(int argc, char *argv[])
     Cuerr = cudaMalloc( &cmuy0_d  , nchrom       *sizeof(user_complex_t));  CHK_ERR;
     Cuerr = cudaMalloc( &cmuz0_d  , nchrom       *sizeof(user_complex_t));  CHK_ERR;
     Cuerr = cudaMalloc( &tmpmu_d  , nchrom       *sizeof(user_complex_t));  CHK_ERR;
+    Cuerr = cudaMalloc( &axx_d    , nchrom       *sizeof(user_real_t));     CHK_ERR;
+    Cuerr = cudaMalloc( &ayy_d    , nchrom       *sizeof(user_real_t));     CHK_ERR;
+    Cuerr = cudaMalloc( &azz_d    , nchrom       *sizeof(user_real_t));     CHK_ERR;
+    Cuerr = cudaMalloc( &axy_d    , nchrom       *sizeof(user_real_t));     CHK_ERR;
+    Cuerr = cudaMalloc( &ayz_d    , nchrom       *sizeof(user_real_t));     CHK_ERR;
+    Cuerr = cudaMalloc( &azx_d    , nchrom       *sizeof(user_real_t));     CHK_ERR;
+    Cuerr = cudaMalloc( &caxx_d   , nchrom       *sizeof(user_real_t));     CHK_ERR;
+    Cuerr = cudaMalloc( &cayy_d   , nchrom       *sizeof(user_real_t));     CHK_ERR;
+    Cuerr = cudaMalloc( &cazz_d   , nchrom       *sizeof(user_real_t));     CHK_ERR;
+    Cuerr = cudaMalloc( &caxy_d   , nchrom       *sizeof(user_real_t));     CHK_ERR;
+    Cuerr = cudaMalloc( &cayz_d   , nchrom       *sizeof(user_real_t));     CHK_ERR;
+    Cuerr = cudaMalloc( &cazx_d   , nchrom       *sizeof(user_real_t));     CHK_ERR;
+    Cuerr = cudaMalloc( &caxx0_d  , nchrom       *sizeof(user_real_t));     CHK_ERR;
+    Cuerr = cudaMalloc( &cayy0_d  , nchrom       *sizeof(user_real_t));     CHK_ERR;
+    Cuerr = cudaMalloc( &cazz0_d  , nchrom       *sizeof(user_real_t));     CHK_ERR;
+    Cuerr = cudaMalloc( &caxy0_d  , nchrom       *sizeof(user_real_t));     CHK_ERR;
+    Cuerr = cudaMalloc( &cayz0_d  , nchrom       *sizeof(user_real_t));     CHK_ERR;
+    Cuerr = cudaMalloc( &cazx0_d  , nchrom       *sizeof(user_real_t));     CHK_ERR;
+ 
 
     // F_d is persistant so alloacate here
     Cuerr = cudaMalloc( &F_d      , nchrom2      *sizeof(user_complex_t)); CHK_ERR;
@@ -336,7 +376,7 @@ int main(int argc, char *argv[])
         checkpoint( argv, gmxf, cptf, outf, model, &ifintmeth, &dt, &ntcfpoints, &nsamples, &sampleEvery, &t1, 
                     &avef, &omegaStart, &omegaStop, &omegaStep, &natom_mol, &nchrom_mol, &nzeros, &beginTime,
                     &SPECD_FLAG, &max_int_steps, nchrom, nomega, &currentSample, &currentFrame, tcf, Sw, F_d, 
-                    cmux0_d, cmuy0_d, cmuz0_d, CP_READ );
+                    cmux0_d, cmuy0_d, cmuz0_d, caxx0_d, cayy0_d, cazz0_d, caxy0_d, cayz0_d, cazx0_d, CP_READ );
     }
     // **************************************************** //
 
@@ -381,7 +421,7 @@ int main(int argc, char *argv[])
                 checkpoint( argv, gmxf, cptf, outf, model, &ifintmeth, &dt, &ntcfpoints, &nsamples, &sampleEvery, &t1, 
                             &avef, &omegaStart, &omegaStop, &omegaStep, &natom_mol, &nchrom_mol, &nzeros, &beginTime,
                             &SPECD_FLAG, &max_int_steps, nchrom, nomega, &currentSample, &currentFrame, tcf, Sw, F_d, 
-                            cmux0_d, cmuy0_d, cmuz0_d, CP_WRITE );
+                            cmux0_d, cmuy0_d, cmuz0_d, caxx0_d, cayy0_d, cazz0_d, caxy0_d, cayz0_d, cazx0_d, CP_WRITE );
                 exit(EXIT_SUCCESS);
             }
 
@@ -401,7 +441,8 @@ int main(int argc, char *argv[])
 
             // launch kernel to calculate the electric field projection along OH bonds and build the exciton hamiltonian
             get_eproj_GPU <<<numBlocks,blockSize>>> ( x_d, box[0][0], box[1][1], box[2][2], natoms, natom_mol, nchrom, nchrom_mol, nmol, imodel, eproj_d );
-            get_kappa_GPU <<<numBlocks,blockSize>>> ( x_d, box[0][0], box[1][1], box[2][2], natoms, natom_mol, nchrom, nchrom_mol, nmol, eproj_d, kappa_d, mux_d, muy_d, muz_d, avef );
+            get_kappa_GPU <<<numBlocks,blockSize>>> ( x_d, box[0][0], box[1][1], box[2][2], natoms, natom_mol, nchrom, nchrom_mol, nmol, eproj_d, kappa_d, mux_d, muy_d, muz_d, 
+                                                      axx_d, ayy_d, azz_d, axy_d, ayz_d, azx_d, avef );
 
 
             // ***          Done getting System Info            *** //
@@ -526,7 +567,14 @@ int main(int argc, char *argv[])
             cast_to_complex_GPU <<<numBlocks,blockSize>>> ( mux_d  , cmux_d  , nchrom );
             cast_to_complex_GPU <<<numBlocks,blockSize>>> ( muy_d  , cmuy_d  , nchrom );
             cast_to_complex_GPU <<<numBlocks,blockSize>>> ( muz_d  , cmuz_d  , nchrom );
+            cast_to_complex_GPU <<<numBlocks,blockSize>>> ( axx_d  , caxx_d  , nchrom );
+            cast_to_complex_GPU <<<numBlocks,blockSize>>> ( ayy_d  , cayy_d  , nchrom );
+            cast_to_complex_GPU <<<numBlocks,blockSize>>> ( azz_d  , cazz_d  , nchrom );
+            cast_to_complex_GPU <<<numBlocks,blockSize>>> ( axy_d  , caxy_d  , nchrom );
+            cast_to_complex_GPU <<<numBlocks,blockSize>>> ( ayz_d  , cayz_d  , nchrom );
+            cast_to_complex_GPU <<<numBlocks,blockSize>>> ( azx_d  , cazx_d  , nchrom );
 
+            
             // free float hamiltonian since we won't need it from here and allocate space for the rest 
             // of the 2D matrix variables that have not yet been allocated if actively managing memory
             if ( !ALLOCATE_2DGPU_ONCE )
@@ -549,6 +597,15 @@ int main(int argc, char *argv[])
                 cast_to_complex_GPU <<<numBlocks,blockSize>>> ( mux_d  , cmux0_d  , nchrom );
                 cast_to_complex_GPU <<<numBlocks,blockSize>>> ( muy_d  , cmuy0_d  , nchrom );
                 cast_to_complex_GPU <<<numBlocks,blockSize>>> ( muz_d  , cmuz0_d  , nchrom );
+
+                // set the polarizability at t=0
+                cast_to_complex_GPU <<<numBlocks,blockSize>>> ( axx_d  , caxx0_d  , nchrom );
+                cast_to_complex_GPU <<<numBlocks,blockSize>>> ( ayy_d  , cayy0_d  , nchrom );
+                cast_to_complex_GPU <<<numBlocks,blockSize>>> ( azz_d  , cazz0_d  , nchrom );
+                cast_to_complex_GPU <<<numBlocks,blockSize>>> ( axy_d  , caxy0_d  , nchrom );
+                cast_to_complex_GPU <<<numBlocks,blockSize>>> ( ayz_d  , cayz0_d  , nchrom );
+                cast_to_complex_GPU <<<numBlocks,blockSize>>> ( azx_d  , cazx0_d  , nchrom );
+
             }
             else
             {
@@ -729,25 +786,102 @@ int main(int argc, char *argv[])
             tcfz = magma_zdotu( (magma_int_t) nchrom, cmuz_d, 1, tmpmu_d, 1, queue );
 #else
             // x
-            magma_cgemv( MagmaNoTrans, (magma_int_t) nchrom, (magma_int_t) nchrom, MAGMA_C_ONE, F_d, (magma_int_t) nchrom,
-                         cmux0_d, 1, MAGMA_C_ZERO, tmpmu_d, 1, queue);
+            magma_cgemv( MagmaNoTrans, (magma_int_t) nchrom, (magma_int_t) nchrom, MAGMA_ONE, F_d, (magma_int_t) nchrom,
+                         cmux0_d, 1, MAGMA_ZERO, tmpmu_d, 1, queue);
             tcfx = magma_cdotu( (magma_int_t) nchrom, cmux_d, 1, tmpmu_d, 1, queue );
 
             // y
-            magma_cgemv( MagmaNoTrans, (magma_int_t) nchrom, (magma_int_t) nchrom, MAGMA_C_ONE, F_d, (magma_int_t) nchrom,
-                         cmuy0_d, 1, MAGMA_C_ZERO, tmpmu_d, 1, queue);
+            magma_cgemv( MagmaNoTrans, (magma_int_t) nchrom, (magma_int_t) nchrom, MAGMA_ONE, F_d, (magma_int_t) nchrom,
+                         cmuy0_d, 1, MAGMA_ZERO, tmpmu_d, 1, queue);
             tcfy = magma_cdotu( (magma_int_t) nchrom, cmuy_d, 1, tmpmu_d, 1, queue );
 
             // z
-            magma_cgemv( MagmaNoTrans, (magma_int_t) nchrom, (magma_int_t) nchrom, MAGMA_C_ONE, F_d, (magma_int_t) nchrom,
-                         cmuz0_d, 1, MAGMA_C_ZERO, tmpmu_d, 1, queue);
+            magma_cgemv( MagmaNoTrans, (magma_int_t) nchrom, (magma_int_t) nchrom, MAGMA_ONE, F_d, (magma_int_t) nchrom,
+                         cmuz0_d, 1, MAGMA_ZERO, tmpmu_d, 1, queue);
             tcfz = magma_cdotu( (magma_int_t) nchrom, cmuz_d, 1, tmpmu_d, 1, queue );
 #endif
 
-            // accumulate the tcf over the samples
+            // accumulate the tcf over the samples for the IR spectrum
             tcftmp                = MAGMA_ADD( tcfx  , tcfy );
             tcftmp                = MAGMA_ADD( tcftmp, tcfz );
             tcf[ currentFrame ]   = MAGMA_ADD( tcf[currentFrame], tcftmp );
+
+
+
+            // now the raman spectrum
+            // tcfxx = caxx0_d**T * F_d * caxx_d
+#ifdef USE_DOUBLES
+            // xx
+            magma_zgemv( MagmaNoTrans, (magma_int_t) nchrom, (magma_int_t) nchrom, MAGMA_ONE, F_d, (magma_int_t) nchrom,
+                         caxx0_d, 1, MAGMA_ZERO, tmpmu_d, 1, queue);
+            tcfxx = magma_zdotu( (magma_int_t) nchrom, caxx_d, 1, tmpmu_d, 1, queue );
+
+            // yy
+            magma_zgemv( MagmaNoTrans, (magma_int_t) nchrom, (magma_int_t) nchrom, MAGMA_ONE, F_d, (magma_int_t) nchrom,
+                         cayy0_d, 1, MAGMA_ZERO, tmpmu_d, 1, queue);
+            tcfyy = magma_zdotu( (magma_int_t) nchrom, cayy_d, 1, tmpmu_d, 1, queue );
+
+            // zz
+            magma_zgemv( MagmaNoTrans, (magma_int_t) nchrom, (magma_int_t) nchrom, MAGMA_ONE, F_d, (magma_int_t) nchrom,
+                         cazz0_d, 1, MAGMA_ZERO, tmpmu_d, 1, queue);
+            tcfzz = magma_zdotu( (magma_int_t) nchrom, cazz_d, 1, tmpmu_d, 1, queue );
+
+            // xy
+            magma_zgemv( MagmaNoTrans, (magma_int_t) nchrom, (magma_int_t) nchrom, MAGMA_ONE, F_d, (magma_int_t) nchrom,
+                         caxy0_d, 1, MAGMA_ZERO, tmpmu_d, 1, queue);
+            tcfxy = magma_zdotu( (magma_int_t) nchrom, caxy_d, 1, tmpmu_d, 1, queue );
+
+            // yz
+            magma_zgemv( MagmaNoTrans, (magma_int_t) nchrom, (magma_int_t) nchrom, MAGMA_ONE, F_d, (magma_int_t) nchrom,
+                         cayz0_d, 1, MAGMA_ZERO, tmpmu_d, 1, queue);
+            tcfyz = magma_zdotu( (magma_int_t) nchrom, cayz_d, 1, tmpmu_d, 1, queue );
+
+            // zz
+            magma_zgemv( MagmaNoTrans, (magma_int_t) nchrom, (magma_int_t) nchrom, MAGMA_ONE, F_d, (magma_int_t) nchrom,
+                         cazx0_d, 1, MAGMA_ZERO, tmpmu_d, 1, queue);
+            tcfzx = magma_zdotu( (magma_int_t) nchrom, cazx_d, 1, tmpmu_d, 1, queue );
+#else
+            // xx
+            magma_cgemv( MagmaNoTrans, (magma_int_t) nchrom, (magma_int_t) nchrom, MAGMA_ONE, F_d, (magma_int_t) nchrom,
+                         caxx0_d, 1, MAGMA_ZERO, tmpmu_d, 1, queue);
+            tcfxx = magma_cdotu( (magma_int_t) nchrom, caxx_d, 1, tmpmu_d, 1, queue );
+
+            // yy
+            magma_cgemv( MagmaNoTrans, (magma_int_t) nchrom, (magma_int_t) nchrom, MAGMA_ONE, F_d, (magma_int_t) nchrom,
+                         cayy0_d, 1, MAGMA_ZERO, tmpmu_d, 1, queue);
+            tcfyy = magma_cdotu( (magma_int_t) nchrom, cayy_d, 1, tmpmu_d, 1, queue );
+
+            // zz
+            magma_cgemv( MagmaNoTrans, (magma_int_t) nchrom, (magma_int_t) nchrom, MAGMA_ONE, F_d, (magma_int_t) nchrom,
+                         cazz0_d, 1, MAGMA_ZERO, tmpmu_d, 1, queue);
+            tcfzz = magma_cdotu( (magma_int_t) nchrom, cazz_d, 1, tmpmu_d, 1, queue );
+
+            // xy
+            magma_cgemv( MagmaNoTrans, (magma_int_t) nchrom, (magma_int_t) nchrom, MAGMA_ONE, F_d, (magma_int_t) nchrom,
+                         caxy0_d, 1, MAGMA_ZERO, tmpmu_d, 1, queue);
+            tcfxy = magma_cdotu( (magma_int_t) nchrom, caxy_d, 1, tmpmu_d, 1, queue );
+
+            // yz
+            magma_cgemv( MagmaNoTrans, (magma_int_t) nchrom, (magma_int_t) nchrom, MAGMA_ONE, F_d, (magma_int_t) nchrom,
+                         cayz0_d, 1, MAGMA_ZERO, tmpmu_d, 1, queue);
+            tcfyz = magma_cdotu( (magma_int_t) nchrom, cayz_d, 1, tmpmu_d, 1, queue );
+
+            // zz
+            magma_cgemv( MagmaNoTrans, (magma_int_t) nchrom, (magma_int_t) nchrom, MAGMA_ONE, F_d, (magma_int_t) nchrom,
+                         cazx0_d, 1, MAGMA_ZERO, tmpmu_d, 1, queue);
+            tcfzx = magma_cdotu( (magma_int_t) nchrom, cazx_d, 1, tmpmu_d, 1, queue );
+#endif
+
+            // accumulate the tcf over the samples for the VV raman spectrum
+            tcftmp                = MAGMA_ADD( tcfxx , tcfyy );
+            tcftmp                = MAGMA_ADD( tcftmp, tcfzz );
+            tcfvv[ currentFrame ]   = MAGMA_ADD( tcfvv[currentFrame], tcftmp );
+
+            // accumulate the tcf over the samples for the VH raman spectrum
+            tcftmp                = MAGMA_ADD( tcfxy , tcfyz );
+            tcftmp                = MAGMA_ADD( tcftmp, tcfzx );
+            tcfvh[ currentFrame ]   = MAGMA_ADD( tcfvh[currentFrame], tcftmp );
+
 
             // ***        Done with Time Correlation            *** //
             // ---------------------------------------------------- //
@@ -768,7 +902,7 @@ int main(int argc, char *argv[])
         checkpoint( argv, gmxf, cptf, outf, model, &ifintmeth, &dt, &ntcfpoints, &nsamples, &sampleEvery, &t1, 
                     &avef, &omegaStart, &omegaStop, &omegaStep, &natom_mol, &nchrom_mol, &nzeros, &beginTime,
                     &SPECD_FLAG, &max_int_steps, nchrom, nomega, &currentSample, &currentFrame, tcf, Sw, F_d, 
-                    cmux0_d, cmuy0_d, cmuz0_d, CP_WRITE );
+                    cmux0_d, cmuy0_d, cmuz0_d, caxx0_d, cayy0_d, cazz0_d, caxy0_d, cayz0_d, cazx0_d, CP_WRITE );
 
         }
     } // end outer loop
@@ -780,6 +914,9 @@ int main(int argc, char *argv[])
     // close xdr file
     xdrfile_close(trj);
 
+
+    // ***                  IR Spectrum                 *** //
+    // ---------------------------------------------------- //
 
     // pad the time correlation function with zeros, copy to device memory and perform fft
     // fourier transform the time correlation function on the GPU
@@ -804,11 +941,52 @@ int main(int argc, char *argv[])
     cufftExecC2R ( plan, pdtcf_d, Ftcf_d );
 #endif
     cudaMemcpy   ( Ftcf, Ftcf_d, ntcfpointsR*sizeof(user_real_t), cudaMemcpyDeviceToHost );
+
+
+    // ***                  VV Spectrum                 *** //
+    // ---------------------------------------------------- //
+    for ( int i = 0; i < ntcfpoints; i++ )
+    {
+        // multiply the tcf by the relaxation term
+        dcy      = MAGMA_MAKE(exp( -1.0 * i * dt / ( 2.0 * t1 )), 0.0);
+        tcfvv[i] = MAGMA_MUL( tcfvv[i], dcy );
+        pdtcf[i] = MAGMA_DIV(tcfvv[i], MAGMA_MAKE( nsamples, 0.0 ));
+    }
+    for ( int i = 0; i < nzeros; i++ ) pdtcf[i+ntcfpoints] = MAGMA_ZERO;
+    cudaMemcpy( pdtcf_d, pdtcf, (ntcfpoints+nzeros)*sizeof(user_complex_t), cudaMemcpyHostToDevice );
+
+#ifdef USE_DOUBLES
+    cufftExecZ2D ( plan, pdtcf_d, Ftcf_d );
+#else
+    cufftExecC2R ( plan, pdtcf_d, Ftcf_d );
+#endif
+    cudaMemcpy   ( Ftcfvv, Ftcf_d, ntcfpointsR*sizeof(user_real_t), cudaMemcpyDeviceToHost );
+
+
+    // ***                  VH Spectrum                 *** //
+    // ---------------------------------------------------- //
+    for ( int i = 0; i < ntcfpoints; i++ )
+    {
+        // multiply the tcf by the relaxation term
+        dcy      = MAGMA_MAKE(exp( -1.0 * i * dt / ( 2.0 * t1 )), 0.0);
+        tcfvh[i] = MAGMA_MUL( tcfvh[i], dcy );
+        pdtcf[i] = MAGMA_DIV(tcfvh[i], MAGMA_MAKE( nsamples, 0.0 ));
+    }
+    for ( int i = 0; i < nzeros; i++ ) pdtcf[i+ntcfpoints] = MAGMA_ZERO;
+    cudaMemcpy( pdtcf_d, pdtcf, (ntcfpoints+nzeros)*sizeof(user_complex_t), cudaMemcpyHostToDevice );
+
+#ifdef USE_DOUBLES
+    cufftExecZ2D ( plan, pdtcf_d, Ftcf_d );
+#else
+    cufftExecC2R ( plan, pdtcf_d, Ftcf_d );
+#endif
+    cudaMemcpy   ( Ftcfvh, Ftcf_d, ntcfpointsR*sizeof(user_real_t), cudaMemcpyDeviceToHost );
     cufftDestroy(plan);
 
 
     // normalize spectral density by number of samples
     if ( SPECD_FLAG ) for ( int i = 0; i < nomega; i++) Sw[i]   = Sw[i] / (user_real_t) nsamples;
+
 
 
     // write time correlation function
@@ -847,18 +1025,52 @@ int main(int argc, char *argv[])
     }
     fclose(spec_lineshape);
 
+    // Write the VV Raman lineshape
+    vv_lineshape = fopen(strcat(strcpy(fname,outf),"vv.dat"),"w");
+    for ( int i = (ntcfpoints+nzeros)/2; i < ntcfpoints+nzeros; i++ )   // "negative" FFT frequencies
+    {
+        freq = -1*(i-ntcfpoints-nzeros)*factor + avef;
+        if ( freq <= (user_real_t) omegaStop  ) fprintf(vv_lineshape, "%g %g\n", freq, Ftcfvv[i]/(factor*(ntcfpoints+nzeros)));
+    }
+    for ( int i = 0; i < ntcfpoints+nzeros / 2 ; i++)                   // "positive" FFT frequencies
+    {
+        freq = -1*i*factor + avef;
+        if ( freq >= (user_real_t) omegaStart) fprintf(vv_lineshape, "%g %g\n", freq, Ftcfvv[i]/(factor*(ntcfpoints+nzeros)));
+    }
+    fclose(vv_lineshape);
+
+    // Write the VH Raman lineshape
+    vh_lineshape = fopen(strcat(strcpy(fname,outf),"vh.dat"),"w");
+    for ( int i = (ntcfpoints+nzeros)/2; i < ntcfpoints+nzeros; i++ )   // "negative" FFT frequencies
+    {
+        freq = -1*(i-ntcfpoints-nzeros)*factor + avef;
+        if ( freq <= (user_real_t) omegaStop  ) fprintf(vh_lineshape, "%g %g\n", freq, Ftcfvh[i]/(factor*(ntcfpoints+nzeros)));
+    }
+    for ( int i = 0; i < ntcfpoints+nzeros / 2 ; i++)                   // "positive" FFT frequencies
+    {
+        freq = -1*i*factor + avef;
+        if ( freq >= (user_real_t) omegaStart) fprintf(vh_lineshape, "%g %g\n", freq, Ftcfvh[i]/(factor*(ntcfpoints+nzeros)));
+    }
+    fclose(vh_lineshape);
+
+
     // free memory on the CPU and GPU and finalize magma library
     magma_queue_destroy( queue );
 
     free(x);
     free(Ftcf);
+    free(Ftcfvv);
+    free(Ftcfvh);
     free(tcf);
+    free(tcfvv);
+    free(tcfvh);
     free(pdtcf);
 
     cudaFree(x_d);
     cudaFree(Ftcf_d);
     cudaFree(tcf_d);
-
+    cudaFree(tcfvv_d);
+    cudaFree(tcfvh_d);
     cudaFree(mux_d); 
     cudaFree(muy_d);
     cudaFree(muz_d);
@@ -870,6 +1082,24 @@ int main(int argc, char *argv[])
     cudaFree(cmuy0_d);
     cudaFree(cmuz0_d);
     cudaFree(tmpmu_d);
+    cudaFree(axx_d);
+    cudaFree(ayy_d);
+    cudaFree(azz_d);
+    cudaFree(axy_d);
+    cudaFree(ayz_d);
+    cudaFree(azx_d);
+    cudaFree(caxx_d);
+    cudaFree(cayy_d);
+    cudaFree(cazz_d);
+    cudaFree(caxy_d);
+    cudaFree(cayz_d);
+    cudaFree(cazx_d);
+    cudaFree(caxx0_d);
+    cudaFree(cayy0_d);
+    cudaFree(cazz0_d);
+    cudaFree(caxy0_d);
+    cudaFree(cayz0_d);
+    cudaFree(cazx0_d);
     cudaFree(F_d);
 
     if ( ALLOCATE_2DGPU_ONCE )
@@ -1093,7 +1323,8 @@ void get_eproj_GPU( rvec *x, float boxx, float boxy, float boxz, int natoms, int
  **********************************************************/
 __global__
 void get_kappa_GPU( rvec *x, float boxx, float boxy, float boxz, int natoms, int natom_mol, int nchrom, int nchrom_mol, int nmol, 
-                    user_real_t *eproj, user_real_t *kappa, user_real_t *mux, user_real_t *muy, user_real_t *muz, user_real_t avef)
+                    user_real_t *eproj, user_real_t *kappa, user_real_t *mux, user_real_t *muy, user_real_t *muz, user_real_t *axx,
+                    user_real_t *ayy, user_real_t *azz, user_real_t *axy, user_real_t *ayz, user_real_t *azx, user_real_t avef)
 {
     
     int n, m, istart, istride;
@@ -1170,7 +1401,13 @@ void get_kappa_GPU( rvec *x, float boxx, float boxy, float boxz, int natoms, int
         muy[chromn] = noh[1] * nmuprime * xn;
         muz[chromn] = noh[2] * nmuprime * xn;
 
-
+        // and the polarizability
+        axx[chromn] = (4.6 * noh[0] * noh[0] + 1.0) * xn;
+        ayy[chromn] = (4.6 * noh[1] * noh[1] + 1.0) * xn;
+        azz[chromn] = (4.6 * noh[2] * noh[2] + 1.0) * xn;
+        axy[chromn] = 4.6 * noh[0] * noh[1] * xn;
+        ayz[chromn] = 4.6 * noh[1] * noh[2] * xn;
+        azx[chromn] = 4.6 * noh[2] * noh[0] * xn;
 
         // Loop over all other chromophores
         for ( chromm = 0; chromm < nchrom; chromm ++ )
@@ -1538,7 +1775,8 @@ void checkpoint( char *argv[], char gmxf[], char cptf[], char outf[], char model
                  int *nsamples, int *sampleEvery, user_real_t *t1, user_real_t *avef, int *omegaStart, int *omegaStop, int *omegaStep,
                  int *natom_mol, int *nchrom_mol, int *nzeros, user_real_t *beginTime, int *SPECD_FLAG, user_real_t *max_int_steps, int nchrom, int nomega,
                  int *currentSample, int *currentFrame, user_complex_t *tcf, user_real_t *Sw, user_complex_t *F_d, user_complex_t *cmux0_d,
-                 user_complex_t *cmuy0_d, user_complex_t *cmuz0_d, int RWI_FLAG )
+                 user_complex_t *cmuy0_d, user_complex_t *cmuz0_d, user_complex_t *caxx0_d, user_complex_t *cayy0_d, user_complex_t *cazz0_d, 
+                 user_complex_t *caxy0_d, user_complex_t *cayz0_d, user_complex_t *cazx0_d, int RWI_FLAG )
 {
 
     FILE *cptfp;                // checkpoint file pointer
@@ -1602,6 +1840,24 @@ void checkpoint( char *argv[], char gmxf[], char cptf[], char outf[], char model
 
             cudaMemcpy( tmparr, cmuz0_d , nchrom*sizeof(user_complex_t), cudaMemcpyDeviceToHost );
             fwrite( tmparr  , sizeof(user_complex_t), nchrom        , cptfp ); // mu0 -- not needed at frame 0
+
+            cudaMemcpy( tmparr, caxx0_d , nchrom*sizeof(user_complex_t), cudaMemcpyDeviceToHost );
+            fwrite( tmparr  , sizeof(user_complex_t), nchrom        , cptfp ); // axx -- not needed at frame 0
+
+            cudaMemcpy( tmparr, cayy0_d , nchrom*sizeof(user_complex_t), cudaMemcpyDeviceToHost );
+            fwrite( tmparr  , sizeof(user_complex_t), nchrom        , cptfp ); // ayy -- not needed at frame 0
+
+            cudaMemcpy( tmparr, cazz0_d , nchrom*sizeof(user_complex_t), cudaMemcpyDeviceToHost );
+            fwrite( tmparr  , sizeof(user_complex_t), nchrom        , cptfp ); // azz -- not needed at frame 0
+
+            cudaMemcpy( tmparr, caxy0_d , nchrom*sizeof(user_complex_t), cudaMemcpyDeviceToHost );
+            fwrite( tmparr  , sizeof(user_complex_t), nchrom        , cptfp ); // axy -- not needed at frame 0
+
+            cudaMemcpy( tmparr, cayz0_d , nchrom*sizeof(user_complex_t), cudaMemcpyDeviceToHost );
+            fwrite( tmparr  , sizeof(user_complex_t), nchrom        , cptfp ); // ayz -- not needed at frame 0
+
+            cudaMemcpy( tmparr, cazx0_d , nchrom*sizeof(user_complex_t), cudaMemcpyDeviceToHost );
+            fwrite( tmparr  , sizeof(user_complex_t), nchrom        , cptfp ); // azx -- not needed at frame 0
 
             free( tmparr );
         }
@@ -1680,6 +1936,24 @@ void checkpoint( char *argv[], char gmxf[], char cptf[], char outf[], char model
 
                     fread( tmparr  , sizeof(user_complex_t), nchrom        , cptfp ); // mu0 -- not needed at frame 0
                     cudaMemcpy( cmuz0_d, tmparr, nchrom*sizeof(user_complex_t), cudaMemcpyHostToDevice );
+
+                    fread( tmparr  , sizeof(user_complex_t), nchrom        , cptfp ); // axx -- not needed at frame 0
+                    cudaMemcpy( caxx0_d, tmparr, nchrom*sizeof(user_complex_t), cudaMemcpyHostToDevice );
+
+                    fread( tmparr  , sizeof(user_complex_t), nchrom        , cptfp ); // ayy -- not needed at frame 0
+                    cudaMemcpy( cayy0_d, tmparr, nchrom*sizeof(user_complex_t), cudaMemcpyHostToDevice );
+
+                    fread( tmparr  , sizeof(user_complex_t), nchrom        , cptfp ); // azz -- not needed at frame 0
+                    cudaMemcpy( cazz0_d, tmparr, nchrom*sizeof(user_complex_t), cudaMemcpyHostToDevice );
+
+                    fread( tmparr  , sizeof(user_complex_t), nchrom        , cptfp ); // axy -- not needed at frame 0
+                    cudaMemcpy( caxy0_d, tmparr, nchrom*sizeof(user_complex_t), cudaMemcpyHostToDevice );
+
+                    fread( tmparr  , sizeof(user_complex_t), nchrom        , cptfp ); // ayz -- not needed at frame 0
+                    cudaMemcpy( cayz0_d, tmparr, nchrom*sizeof(user_complex_t), cudaMemcpyHostToDevice );
+
+                    fread( tmparr  , sizeof(user_complex_t), nchrom        , cptfp ); // azx -- not needed at frame 0
+                    cudaMemcpy( cazx0_d, tmparr, nchrom*sizeof(user_complex_t), cudaMemcpyHostToDevice );
 
                     free( tmparr );
                 }
