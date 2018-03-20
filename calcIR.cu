@@ -92,7 +92,7 @@ int main(int argc, char *argv[])
         checkpoint( argv, gmxf, cptf, outf, model, &ifintmeth, &dt, &ntcfpoints, &nsamples, &sampleEvery, &t1, 
                     &avef, &omegaStart, &omegaStop, &omegaStep, &natom_mol, &nchrom_mol, &nzeros, &beginTime,
                     &SPECD_FLAG, &max_int_steps, 0, 0, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, 
-                    NULL, NULL, NULL, NULL, NULL, NULL, CP_INIT );
+                    NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, CP_INIT );
         // nsamples = 11; -- testing
     }
 
@@ -198,13 +198,12 @@ int main(int argc, char *argv[])
     user_complex_t      *ctmpmat_d;                                                     // temporary complex matrix for matrix multiplications on gpu
     user_complex_t      *ckappa_d;                                                      // A complex version of kappa
     user_complex_t      tcfx, tcfy, tcfz;                                               // Time correlation function, polarized, ir
-    user_complex_t      tcfxx, tcfyy, tcfzz;                                            // Time correlation function, polarized, raman
-    user_complex_t      tcfxy, tcfyz, tcfzx;                                            // Time correlation function, polarized, raman
+    user_complex_t      tcf_iiFii, tcf_iiFjj, tcf_ijFij;                                // Time correlation function, polarized, raman
     user_complex_t      dcy, tcftmp;                                                    // Decay constant and a temporary variable for the tcf
     user_complex_t      *pdtcf, *pdtcf_d;                                               // padded time correlation functions
-    user_complex_t      *tcf, *tcf_d;                                                   // Time correlation function IR
-    user_complex_t      *tcfvv, *tcfvv_d;                                               // Time correlation function VV raman
-    user_complex_t      *tcfvh, *tcfvh_d;                                               // Time correlation function VH raman
+    user_complex_t      *tcf;                                                           // Time correlation function IR
+    user_complex_t      *tcfvv;                                                         // Time correlation function VV raman
+    user_complex_t      *tcfvh;                                                         // Time correlation function VH raman
     user_real_t         *Ftcf, *Ftcf_d;                                                 // Fourier transformed time correlation function
     user_real_t         *Ftcfvv, *Ftcfvh;
 
@@ -224,7 +223,11 @@ int main(int argc, char *argv[])
     FILE *spec_density;
     FILE *spec_lineshape; 
     FILE *vv_lineshape; 
+    FILE *vv_rtcf;
+    FILE *vv_itcf;
     FILE *vh_lineshape; 
+    FILE *vh_rtcf;
+    FILE *vh_itcf;
     char *fname;
     fname = (char *) malloc( strlen(outf) + 9 );
     user_real_t factor;                                                                 // conversion factor to give energy and correct intensity from FFT
@@ -286,9 +289,6 @@ int main(int argc, char *argv[])
     Cuerr = cudaMalloc( &x_d      , natoms       *sizeof(x[0]));            CHK_ERR;
     Cuerr = cudaMalloc( &eproj_d  , nchrom       *sizeof(user_real_t));     CHK_ERR;
     Cuerr = cudaMalloc( &Ftcf_d   , ntcfpointsR  *sizeof(user_real_t));     CHK_ERR;
-    Cuerr = cudaMalloc( &tcf_d    , ntcfpoints   *sizeof(user_complex_t));  CHK_ERR;
-    Cuerr = cudaMalloc( &tcfvv_d  , ntcfpoints   *sizeof(user_complex_t));  CHK_ERR;
-    Cuerr = cudaMalloc( &tcfvh_d  , ntcfpoints   *sizeof(user_complex_t));  CHK_ERR;
     Cuerr = cudaMalloc( &mux_d    , nchrom       *sizeof(user_real_t));     CHK_ERR;
     Cuerr = cudaMalloc( &muy_d    , nchrom       *sizeof(user_real_t));     CHK_ERR;
     Cuerr = cudaMalloc( &muz_d    , nchrom       *sizeof(user_real_t));     CHK_ERR;
@@ -305,18 +305,18 @@ int main(int argc, char *argv[])
     Cuerr = cudaMalloc( &axy_d    , nchrom       *sizeof(user_real_t));     CHK_ERR;
     Cuerr = cudaMalloc( &ayz_d    , nchrom       *sizeof(user_real_t));     CHK_ERR;
     Cuerr = cudaMalloc( &azx_d    , nchrom       *sizeof(user_real_t));     CHK_ERR;
-    Cuerr = cudaMalloc( &caxx_d   , nchrom       *sizeof(user_real_t));     CHK_ERR;
-    Cuerr = cudaMalloc( &cayy_d   , nchrom       *sizeof(user_real_t));     CHK_ERR;
-    Cuerr = cudaMalloc( &cazz_d   , nchrom       *sizeof(user_real_t));     CHK_ERR;
-    Cuerr = cudaMalloc( &caxy_d   , nchrom       *sizeof(user_real_t));     CHK_ERR;
-    Cuerr = cudaMalloc( &cayz_d   , nchrom       *sizeof(user_real_t));     CHK_ERR;
-    Cuerr = cudaMalloc( &cazx_d   , nchrom       *sizeof(user_real_t));     CHK_ERR;
-    Cuerr = cudaMalloc( &caxx0_d  , nchrom       *sizeof(user_real_t));     CHK_ERR;
-    Cuerr = cudaMalloc( &cayy0_d  , nchrom       *sizeof(user_real_t));     CHK_ERR;
-    Cuerr = cudaMalloc( &cazz0_d  , nchrom       *sizeof(user_real_t));     CHK_ERR;
-    Cuerr = cudaMalloc( &caxy0_d  , nchrom       *sizeof(user_real_t));     CHK_ERR;
-    Cuerr = cudaMalloc( &cayz0_d  , nchrom       *sizeof(user_real_t));     CHK_ERR;
-    Cuerr = cudaMalloc( &cazx0_d  , nchrom       *sizeof(user_real_t));     CHK_ERR;
+    Cuerr = cudaMalloc( &caxx_d   , nchrom       *sizeof(user_complex_t));     CHK_ERR;
+    Cuerr = cudaMalloc( &cayy_d   , nchrom       *sizeof(user_complex_t));     CHK_ERR;
+    Cuerr = cudaMalloc( &cazz_d   , nchrom       *sizeof(user_complex_t));     CHK_ERR;
+    Cuerr = cudaMalloc( &caxy_d   , nchrom       *sizeof(user_complex_t));     CHK_ERR;
+    Cuerr = cudaMalloc( &cayz_d   , nchrom       *sizeof(user_complex_t));     CHK_ERR;
+    Cuerr = cudaMalloc( &cazx_d   , nchrom       *sizeof(user_complex_t));     CHK_ERR;
+    Cuerr = cudaMalloc( &caxx0_d  , nchrom       *sizeof(user_complex_t));     CHK_ERR;
+    Cuerr = cudaMalloc( &cayy0_d  , nchrom       *sizeof(user_complex_t));     CHK_ERR;
+    Cuerr = cudaMalloc( &cazz0_d  , nchrom       *sizeof(user_complex_t));     CHK_ERR;
+    Cuerr = cudaMalloc( &caxy0_d  , nchrom       *sizeof(user_complex_t));     CHK_ERR;
+    Cuerr = cudaMalloc( &cayz0_d  , nchrom       *sizeof(user_complex_t));     CHK_ERR;
+    Cuerr = cudaMalloc( &cazx0_d  , nchrom       *sizeof(user_complex_t));     CHK_ERR;
  
 
     // F_d is persistant so alloacate here
@@ -375,8 +375,8 @@ int main(int argc, char *argv[])
         // read in checkpoint file
         checkpoint( argv, gmxf, cptf, outf, model, &ifintmeth, &dt, &ntcfpoints, &nsamples, &sampleEvery, &t1, 
                     &avef, &omegaStart, &omegaStop, &omegaStep, &natom_mol, &nchrom_mol, &nzeros, &beginTime,
-                    &SPECD_FLAG, &max_int_steps, nchrom, nomega, &currentSample, &currentFrame, tcf, Sw, F_d, 
-                    cmux0_d, cmuy0_d, cmuz0_d, caxx0_d, cayy0_d, cazz0_d, caxy0_d, cayz0_d, cazx0_d, CP_READ );
+                    &SPECD_FLAG, &max_int_steps, nchrom, nomega, &currentSample, &currentFrame, tcf, tcfvv, tcfvh,
+                    Sw, F_d, cmux0_d, cmuy0_d, cmuz0_d, caxx0_d, cayy0_d, cazz0_d, caxy0_d, cayz0_d, cazx0_d, CP_READ );
     }
     // **************************************************** //
 
@@ -420,8 +420,8 @@ int main(int argc, char *argv[])
             {
                 checkpoint( argv, gmxf, cptf, outf, model, &ifintmeth, &dt, &ntcfpoints, &nsamples, &sampleEvery, &t1, 
                             &avef, &omegaStart, &omegaStop, &omegaStep, &natom_mol, &nchrom_mol, &nzeros, &beginTime,
-                            &SPECD_FLAG, &max_int_steps, nchrom, nomega, &currentSample, &currentFrame, tcf, Sw, F_d, 
-                            cmux0_d, cmuy0_d, cmuz0_d, caxx0_d, cayy0_d, cazz0_d, caxy0_d, cayz0_d, cazx0_d, CP_WRITE );
+                            &SPECD_FLAG, &max_int_steps, nchrom, nomega, &currentSample, &currentFrame, tcf, tcfvv, tcfvh,
+                            Sw, F_d, cmux0_d, cmuy0_d, cmuz0_d, caxx0_d, cayy0_d, cazz0_d, caxy0_d, cayz0_d, cazx0_d, CP_WRITE );
                 exit(EXIT_SUCCESS);
             }
 
@@ -441,8 +441,8 @@ int main(int argc, char *argv[])
 
             // launch kernel to calculate the electric field projection along OH bonds and build the exciton hamiltonian
             get_eproj_GPU <<<numBlocks,blockSize>>> ( x_d, box[0][0], box[1][1], box[2][2], natoms, natom_mol, nchrom, nchrom_mol, nmol, imodel, eproj_d );
-            get_kappa_GPU <<<numBlocks,blockSize>>> ( x_d, box[0][0], box[1][1], box[2][2], natoms, natom_mol, nchrom, nchrom_mol, nmol, eproj_d, kappa_d, mux_d, muy_d, muz_d, 
-                                                      axx_d, ayy_d, azz_d, axy_d, ayz_d, azx_d, avef );
+            get_kappa_GPU <<<numBlocks,blockSize>>> ( x_d, box[0][0], box[1][1], box[2][2], natoms, natom_mol, nchrom, nchrom_mol, nmol, eproj_d, kappa_d, 
+                                                      mux_d, muy_d, muz_d, axx_d, ayy_d, azz_d, axy_d, ayz_d, azx_d, avef );
 
 
             // ***          Done getting System Info            *** //
@@ -605,6 +605,7 @@ int main(int argc, char *argv[])
                 cast_to_complex_GPU <<<numBlocks,blockSize>>> ( axy_d  , caxy0_d  , nchrom );
                 cast_to_complex_GPU <<<numBlocks,blockSize>>> ( ayz_d  , cayz0_d  , nchrom );
                 cast_to_complex_GPU <<<numBlocks,blockSize>>> ( azx_d  , cazx0_d  , nchrom );
+                
 
             }
             else
@@ -807,80 +808,176 @@ int main(int argc, char *argv[])
             tcf[ currentFrame ]   = MAGMA_ADD( tcf[currentFrame], tcftmp );
 
 
+            // zero variables
+            tcf_iiFii = MAGMA_ZERO;
+            tcf_ijFij = MAGMA_ZERO;
+            tcf_iiFjj = MAGMA_ZERO;
 
-            // now the raman spectrum
+            //              Now The Raman Spectrum             //
+            //-------------------------------------------------//
             // tcfxx = caxx0_d**T * F_d * caxx_d
 #ifdef USE_DOUBLES
-            // xx
+
+            // **
+            // iiFii
+            // **
+
+            // xxFxx
             magma_zgemv( MagmaNoTrans, (magma_int_t) nchrom, (magma_int_t) nchrom, MAGMA_ONE, F_d, (magma_int_t) nchrom,
                          caxx0_d, 1, MAGMA_ZERO, tmpmu_d, 1, queue);
-            tcfxx = magma_zdotu( (magma_int_t) nchrom, caxx_d, 1, tmpmu_d, 1, queue );
+            tcf_iiFii = magma_zdotu( (magma_int_t) nchrom, caxx_d, 1, tmpmu_d, 1, queue );
 
-            // yy
+            // yyFyy
             magma_zgemv( MagmaNoTrans, (magma_int_t) nchrom, (magma_int_t) nchrom, MAGMA_ONE, F_d, (magma_int_t) nchrom,
                          cayy0_d, 1, MAGMA_ZERO, tmpmu_d, 1, queue);
-            tcfyy = magma_zdotu( (magma_int_t) nchrom, cayy_d, 1, tmpmu_d, 1, queue );
+            tcf_iiFii = MAGMA_ADD( magma_zdotu( (magma_int_t) nchrom, cayy_d, 1, tmpmu_d, 1, queue ), tcf_iiFii );
 
-            // zz
+            // zzFzz
             magma_zgemv( MagmaNoTrans, (magma_int_t) nchrom, (magma_int_t) nchrom, MAGMA_ONE, F_d, (magma_int_t) nchrom,
                          cazz0_d, 1, MAGMA_ZERO, tmpmu_d, 1, queue);
-            tcfzz = magma_zdotu( (magma_int_t) nchrom, cazz_d, 1, tmpmu_d, 1, queue );
+            tcf_iiFii = MAGMA_ADD( magma_zdotu( (magma_int_t) nchrom, cazz_d, 1, tmpmu_d, 1, queue ), tcf_iiFii );
 
-            // xy
+            // **
+            // ijFij
+            // **
+
+            // xyFxy
             magma_zgemv( MagmaNoTrans, (magma_int_t) nchrom, (magma_int_t) nchrom, MAGMA_ONE, F_d, (magma_int_t) nchrom,
                          caxy0_d, 1, MAGMA_ZERO, tmpmu_d, 1, queue);
-            tcfxy = magma_zdotu( (magma_int_t) nchrom, caxy_d, 1, tmpmu_d, 1, queue );
+            tcf_ijFij = magma_zdotu( (magma_int_t) nchrom, caxy_d, 1, tmpmu_d, 1, queue );
 
-            // yz
+            // yzFyz
             magma_zgemv( MagmaNoTrans, (magma_int_t) nchrom, (magma_int_t) nchrom, MAGMA_ONE, F_d, (magma_int_t) nchrom,
                          cayz0_d, 1, MAGMA_ZERO, tmpmu_d, 1, queue);
-            tcfyz = magma_zdotu( (magma_int_t) nchrom, cayz_d, 1, tmpmu_d, 1, queue );
+            tcf_ijFij = MAGMA_ADD( magma_zdotu( (magma_int_t) nchrom, cayz_d, 1, tmpmu_d, 1, queue ), tcf_ijFij );
 
-            // zz
+            // zxFzx
             magma_zgemv( MagmaNoTrans, (magma_int_t) nchrom, (magma_int_t) nchrom, MAGMA_ONE, F_d, (magma_int_t) nchrom,
                          cazx0_d, 1, MAGMA_ZERO, tmpmu_d, 1, queue);
-            tcfzx = magma_zdotu( (magma_int_t) nchrom, cazx_d, 1, tmpmu_d, 1, queue );
+            tcf_ijFij = MAGMA_ADD( magma_zdotu( (magma_int_t) nchrom, cazx_d, 1, tmpmu_d, 1, queue ), tcf_ijFij );
+
+            // **
+            // iiFjj
+            // **
+
+            // xxFyy
+            magma_zgemv( MagmaNoTrans, (magma_int_t) nchrom, (magma_int_t) nchrom, MAGMA_ONE, F_d, (magma_int_t) nchrom,
+                         caxx0_d, 1, MAGMA_ZERO, tmpmu_d, 1, queue);
+            tcf_iiFjj = magma_zdotu( (magma_int_t) nchrom, cayy_d, 1, tmpmu_d, 1, queue );
+
+            // xxFzz
+            magma_zgemv( MagmaNoTrans, (magma_int_t) nchrom, (magma_int_t) nchrom, MAGMA_ONE, F_d, (magma_int_t) nchrom,
+                         caxx0_d, 1, MAGMA_ZERO, tmpmu_d, 1, queue);
+            tcf_iiFjj = MAGMA_ADD( magma_zdotu( (magma_int_t) nchrom, cazz_d, 1, tmpmu_d, 1, queue ), tcf_iiFjj );
+
+            // yyFxx
+            magma_zgemv( MagmaNoTrans, (magma_int_t) nchrom, (magma_int_t) nchrom, MAGMA_ONE, F_d, (magma_int_t) nchrom,
+                         cayy0_d, 1, MAGMA_ZERO, tmpmu_d, 1, queue);
+            tcf_iiFjj = MAGMA_ADD( magma_zdotu( (magma_int_t) nchrom, caxx_d, 1, tmpmu_d, 1, queue ), tcf_iiFjj);
+
+            // yyFzz
+            magma_zgemv( MagmaNoTrans, (magma_int_t) nchrom, (magma_int_t) nchrom, MAGMA_ONE, F_d, (magma_int_t) nchrom,
+                         cayy0_d, 1, MAGMA_ZERO, tmpmu_d, 1, queue);
+            tcf_iiFjj = MAGMA_ADD( magma_zdotu( (magma_int_t) nchrom, cazz_d, 1, tmpmu_d, 1, queue ), tcf_iiFjj);
+
+            // zzFxx
+            magma_zgemv( MagmaNoTrans, (magma_int_t) nchrom, (magma_int_t) nchrom, MAGMA_ONE, F_d, (magma_int_t) nchrom,
+                         cazz0_d, 1, MAGMA_ZERO, tmpmu_d, 1, queue);
+            tcf_iiFjj = MAGMA_ADD( magma_zdotu( (magma_int_t) nchrom, caxx_d, 1, tmpmu_d, 1, queue ), tcf_iiFjj);
+
+            // zzFyy
+            magma_zgemv( MagmaNoTrans, (magma_int_t) nchrom, (magma_int_t) nchrom, MAGMA_ONE, F_d, (magma_int_t) nchrom,
+                         cazz0_d, 1, MAGMA_ZERO, tmpmu_d, 1, queue);
+            tcf_iiFjj = MAGMA_ADD( magma_zdotu( (magma_int_t) nchrom, cayy_d, 1, tmpmu_d, 1, queue ), tcf_iiFjj);
 #else
-            // xx
+            // **
+            // iiFii
+            // **
+
+            // xxFxx
             magma_cgemv( MagmaNoTrans, (magma_int_t) nchrom, (magma_int_t) nchrom, MAGMA_ONE, F_d, (magma_int_t) nchrom,
                          caxx0_d, 1, MAGMA_ZERO, tmpmu_d, 1, queue);
-            tcfxx = magma_cdotu( (magma_int_t) nchrom, caxx_d, 1, tmpmu_d, 1, queue );
+            tcf_iiFii = magma_cdotu( (magma_int_t) nchrom, caxx_d, 1, tmpmu_d, 1, queue );
 
-            // yy
+            // yyFyy
             magma_cgemv( MagmaNoTrans, (magma_int_t) nchrom, (magma_int_t) nchrom, MAGMA_ONE, F_d, (magma_int_t) nchrom,
                          cayy0_d, 1, MAGMA_ZERO, tmpmu_d, 1, queue);
-            tcfyy = magma_cdotu( (magma_int_t) nchrom, cayy_d, 1, tmpmu_d, 1, queue );
+            tcf_iiFii = MAGMA_ADD( magma_cdotu( (magma_int_t) nchrom, cayy_d, 1, tmpmu_d, 1, queue ), tcf_iiFii );
 
-            // zz
+            // zzFzz
             magma_cgemv( MagmaNoTrans, (magma_int_t) nchrom, (magma_int_t) nchrom, MAGMA_ONE, F_d, (magma_int_t) nchrom,
                          cazz0_d, 1, MAGMA_ZERO, tmpmu_d, 1, queue);
-            tcfzz = magma_cdotu( (magma_int_t) nchrom, cazz_d, 1, tmpmu_d, 1, queue );
+            tcf_iiFii = MAGMA_ADD( magma_cdotu( (magma_int_t) nchrom, cazz_d, 1, tmpmu_d, 1, queue ), tcf_iiFii );
 
-            // xy
+
+            // **
+            // ijFij
+            // **
+
+
+            // xyFxy
             magma_cgemv( MagmaNoTrans, (magma_int_t) nchrom, (magma_int_t) nchrom, MAGMA_ONE, F_d, (magma_int_t) nchrom,
                          caxy0_d, 1, MAGMA_ZERO, tmpmu_d, 1, queue);
-            tcfxy = magma_cdotu( (magma_int_t) nchrom, caxy_d, 1, tmpmu_d, 1, queue );
+            tcf_ijFij = magma_cdotu( (magma_int_t) nchrom, caxy_d, 1, tmpmu_d, 1, queue );
 
-            // yz
+            // yzFyz
             magma_cgemv( MagmaNoTrans, (magma_int_t) nchrom, (magma_int_t) nchrom, MAGMA_ONE, F_d, (magma_int_t) nchrom,
                          cayz0_d, 1, MAGMA_ZERO, tmpmu_d, 1, queue);
-            tcfyz = magma_cdotu( (magma_int_t) nchrom, cayz_d, 1, tmpmu_d, 1, queue );
+            tcf_ijFij = MAGMA_ADD( magma_cdotu( (magma_int_t) nchrom, cayz_d, 1, tmpmu_d, 1, queue ), tcf_ijFij );
 
-            // zz
+            // zxFzx
             magma_cgemv( MagmaNoTrans, (magma_int_t) nchrom, (magma_int_t) nchrom, MAGMA_ONE, F_d, (magma_int_t) nchrom,
                          cazx0_d, 1, MAGMA_ZERO, tmpmu_d, 1, queue);
-            tcfzx = magma_cdotu( (magma_int_t) nchrom, cazx_d, 1, tmpmu_d, 1, queue );
+            tcf_ijFij = MAGMA_ADD( magma_cdotu( (magma_int_t) nchrom, cazx_d, 1, tmpmu_d, 1, queue ), tcf_ijFij );
+
+
+            // **
+            // iiFjj
+            // **
+
+
+            // xxFyy
+            magma_cgemv( MagmaNoTrans, (magma_int_t) nchrom, (magma_int_t) nchrom, MAGMA_ONE, F_d, (magma_int_t) nchrom,
+                         caxx0_d, 1, MAGMA_ZERO, tmpmu_d, 1, queue);
+            tcf_iiFjj = magma_cdotu( (magma_int_t) nchrom, cayy_d, 1, tmpmu_d, 1, queue );
+
+            // xxFzz
+            magma_cgemv( MagmaNoTrans, (magma_int_t) nchrom, (magma_int_t) nchrom, MAGMA_ONE, F_d, (magma_int_t) nchrom,
+                         caxx0_d, 1, MAGMA_ZERO, tmpmu_d, 1, queue);
+            tcf_iiFjj = MAGMA_ADD( magma_cdotu( (magma_int_t) nchrom, cazz_d, 1, tmpmu_d, 1, queue ), tcf_iiFjj );
+
+            // yyFxx
+            magma_cgemv( MagmaNoTrans, (magma_int_t) nchrom, (magma_int_t) nchrom, MAGMA_ONE, F_d, (magma_int_t) nchrom,
+                         cayy0_d, 1, MAGMA_ZERO, tmpmu_d, 1, queue);
+            tcf_iiFjj = MAGMA_ADD( magma_cdotu( (magma_int_t) nchrom, caxx_d, 1, tmpmu_d, 1, queue ), tcf_iiFjj);
+
+            // yyFzz
+            magma_cgemv( MagmaNoTrans, (magma_int_t) nchrom, (magma_int_t) nchrom, MAGMA_ONE, F_d, (magma_int_t) nchrom,
+                         cayy0_d, 1, MAGMA_ZERO, tmpmu_d, 1, queue);
+            tcf_iiFjj = MAGMA_ADD( magma_cdotu( (magma_int_t) nchrom, cazz_d, 1, tmpmu_d, 1, queue ), tcf_iiFjj);
+
+            // zzFxx
+            magma_cgemv( MagmaNoTrans, (magma_int_t) nchrom, (magma_int_t) nchrom, MAGMA_ONE, F_d, (magma_int_t) nchrom,
+                         cazz0_d, 1, MAGMA_ZERO, tmpmu_d, 1, queue);
+            tcf_iiFjj = MAGMA_ADD( magma_cdotu( (magma_int_t) nchrom, caxx_d, 1, tmpmu_d, 1, queue ), tcf_iiFjj);
+
+            // zzFyy
+            magma_cgemv( MagmaNoTrans, (magma_int_t) nchrom, (magma_int_t) nchrom, MAGMA_ONE, F_d, (magma_int_t) nchrom,
+                         cazz0_d, 1, MAGMA_ZERO, tmpmu_d, 1, queue);
+            tcf_iiFjj = MAGMA_ADD( magma_cdotu( (magma_int_t) nchrom, cayy_d, 1, tmpmu_d, 1, queue ), tcf_iiFjj);
 #endif
 
             // accumulate the tcf over the samples for the VV raman spectrum
-            tcftmp                = MAGMA_ADD( tcfxx , tcfyy );
-            tcftmp                = MAGMA_ADD( tcftmp, tcfzz );
-            tcfvv[ currentFrame ]   = MAGMA_ADD( tcfvv[currentFrame], tcftmp );
+            tcftmp                = MAGMA_ADD( MAGMA_MUL(MAGMA_MAKE(3.,0.), tcf_iiFii), tcf_iiFjj );
+            tcftmp                = MAGMA_ADD( tcftmp, MAGMA_MUL(MAGMA_MAKE(4.,0.), tcf_ijFij ));
+            tcftmp                = MAGMA_DIV( tcftmp, MAGMA_MAKE(15.,0.) );
+            tcfvv[ currentFrame ] = MAGMA_ADD( tcfvv[currentFrame], tcftmp );
 
             // accumulate the tcf over the samples for the VH raman spectrum
-            tcftmp                = MAGMA_ADD( tcfxy , tcfyz );
-            tcftmp                = MAGMA_ADD( tcftmp, tcfzx );
-            tcfvh[ currentFrame ]   = MAGMA_ADD( tcfvh[currentFrame], tcftmp );
+            tcftmp                = MAGMA_ADD( MAGMA_MUL(MAGMA_MAKE(2.,0.), tcf_iiFii), MAGMA_MUL( MAGMA_MAKE(-1.,0.), tcf_iiFjj ));
+            tcftmp                = MAGMA_ADD( tcftmp, MAGMA_MUL(MAGMA_MAKE(6.,0.), tcf_ijFij ));
+            tcftmp                = MAGMA_DIV( tcftmp, MAGMA_MAKE(30.,0.) );
+            tcfvh[ currentFrame ] = MAGMA_ADD( tcfvh[currentFrame], tcftmp );
 
 
             // ***        Done with Time Correlation            *** //
@@ -901,8 +998,8 @@ int main(int argc, char *argv[])
         // checkpoint after every sample
         checkpoint( argv, gmxf, cptf, outf, model, &ifintmeth, &dt, &ntcfpoints, &nsamples, &sampleEvery, &t1, 
                     &avef, &omegaStart, &omegaStop, &omegaStep, &natom_mol, &nchrom_mol, &nzeros, &beginTime,
-                    &SPECD_FLAG, &max_int_steps, nchrom, nomega, &currentSample, &currentFrame, tcf, Sw, F_d, 
-                    cmux0_d, cmuy0_d, cmuz0_d, caxx0_d, cayy0_d, cazz0_d, caxy0_d, cayz0_d, cazx0_d, CP_WRITE );
+                    &SPECD_FLAG, &max_int_steps, nchrom, nomega, &currentSample, &currentFrame, tcf, tcfvv, tcfvh,
+                    Sw, F_d, cmux0_d, cmuy0_d, cmuz0_d, caxx0_d, cayy0_d, cazz0_d, caxy0_d, cayz0_d, cazx0_d, CP_WRITE );
 
         }
     } // end outer loop
@@ -943,6 +1040,7 @@ int main(int argc, char *argv[])
     cudaMemcpy   ( Ftcf, Ftcf_d, ntcfpointsR*sizeof(user_real_t), cudaMemcpyDeviceToHost );
 
 
+
     // ***                  VV Spectrum                 *** //
     // ---------------------------------------------------- //
     for ( int i = 0; i < ntcfpoints; i++ )
@@ -950,7 +1048,7 @@ int main(int argc, char *argv[])
         // multiply the tcf by the relaxation term
         dcy      = MAGMA_MAKE(exp( -1.0 * i * dt / ( 2.0 * t1 )), 0.0);
         tcfvv[i] = MAGMA_MUL( tcfvv[i], dcy );
-        pdtcf[i] = MAGMA_DIV(tcfvv[i], MAGMA_MAKE( nsamples, 0.0 ));
+        pdtcf[i] = MAGMA_DIV( tcfvv[i], MAGMA_MAKE( nsamples, 0.0 ));
     }
     for ( int i = 0; i < nzeros; i++ ) pdtcf[i+ntcfpoints] = MAGMA_ZERO;
     cudaMemcpy( pdtcf_d, pdtcf, (ntcfpoints+nzeros)*sizeof(user_complex_t), cudaMemcpyHostToDevice );
@@ -961,6 +1059,7 @@ int main(int argc, char *argv[])
     cufftExecC2R ( plan, pdtcf_d, Ftcf_d );
 #endif
     cudaMemcpy   ( Ftcfvv, Ftcf_d, ntcfpointsR*sizeof(user_real_t), cudaMemcpyDeviceToHost );
+
 
 
     // ***                  VH Spectrum                 *** //
@@ -984,21 +1083,38 @@ int main(int argc, char *argv[])
     cufftDestroy(plan);
 
 
+
     // normalize spectral density by number of samples
     if ( SPECD_FLAG ) for ( int i = 0; i < nomega; i++) Sw[i]   = Sw[i] / (user_real_t) nsamples;
 
 
 
     // write time correlation function
-    rtcf = fopen(strcat(strcpy(fname,outf),"rtcf.dat"), "w");
-    itcf = fopen(strcat(strcpy(fname,outf),"itcf.dat"), "w");
+    rtcf = fopen(strcat(strcpy(fname,outf),"_irrtcf.dat"), "w");
+    itcf = fopen(strcat(strcpy(fname,outf),"_iritcf.dat"), "w");
+    vv_rtcf = fopen(strcat(strcpy(fname,outf),"_vvrtcf.dat"), "w");
+    vv_itcf = fopen(strcat(strcpy(fname,outf),"_vvitcf.dat"), "w");
+    vh_rtcf = fopen(strcat(strcpy(fname,outf),"_vhrtcf.dat"), "w");
+    vh_itcf = fopen(strcat(strcpy(fname,outf),"_vhitcf.dat"), "w");
+    
+    
     for ( int i = 0; i < ntcfpoints; i++ )
     {
         fprintf( rtcf, "%g %g \n", i*dt, MAGMA_REAL( tcf[i] ) );
         fprintf( itcf, "%g %g \n", i*dt, MAGMA_IMAG( tcf[i] ) );
+        fprintf( vv_rtcf, "%g %g \n", i*dt, MAGMA_REAL( tcfvv[i] ) );
+        fprintf( vv_itcf, "%g %g \n", i*dt, MAGMA_IMAG( tcfvv[i] ) );
+        fprintf( vh_rtcf, "%g %g \n", i*dt, MAGMA_REAL( tcfvh[i] ) );
+        fprintf( vh_itcf, "%g %g \n", i*dt, MAGMA_IMAG( tcfvh[i] ) );
     }
     fclose( rtcf );
     fclose( itcf );
+    fclose( vv_rtcf );
+    fclose( vv_itcf );
+    fclose( vh_rtcf );
+    fclose( vh_itcf );
+
+
 
     // write the spectral density
     if ( SPECD_FLAG )
@@ -1011,46 +1127,32 @@ int main(int argc, char *argv[])
     // Write the absorption lineshape
     // Since the C2R transform is inverse by default, the frequencies have to be negated
     // NOTE: to compare with YICUN's code, divide Ftcf by 2
-    spec_lineshape = fopen(strcat(strcpy(fname,outf),"spec.dat"),"w");
+    spec_lineshape = fopen(strcat(strcpy(fname,outf),"_irls.dat"),"w");
+    vv_lineshape   = fopen(strcat(strcpy(fname,outf),"_vvls.dat"),"w");
+    vh_lineshape   = fopen(strcat(strcpy(fname,outf),"_vhls.dat"),"w");
+
+
     factor         = 2*PI*HBAR/(dt*(ntcfpoints+nzeros));                // conversion factor to give energy and correct intensity from FFT
     for ( int i = (ntcfpoints+nzeros)/2; i < ntcfpoints+nzeros; i++ )   // "negative" FFT frequencies
     {
         freq = -1*(i-ntcfpoints-nzeros)*factor + avef;
-        if ( freq <= (user_real_t) omegaStop  ) fprintf(spec_lineshape, "%g %g\n", freq, Ftcf[i]/(factor*(ntcfpoints+nzeros)));
+        if ( freq <= (user_real_t) omegaStop  ) {
+            fprintf(spec_lineshape, "%g %g\n", freq, Ftcf[i]/(factor*(ntcfpoints+nzeros)));
+            fprintf(vv_lineshape, "%g %g\n", freq, Ftcfvv[i]/(factor*(ntcfpoints+nzeros)));
+            fprintf(vh_lineshape, "%g %g\n", freq, Ftcfvh[i]/(factor*(ntcfpoints+nzeros)));
+        }
     }
     for ( int i = 0; i < ntcfpoints+nzeros / 2 ; i++)                   // "positive" FFT frequencies
     {
         freq = -1*i*factor + avef;
-        if ( freq >= (user_real_t) omegaStart) fprintf(spec_lineshape, "%g %g\n", freq, Ftcf[i]/(factor*(ntcfpoints+nzeros)));
+        if ( freq >= (user_real_t) omegaStart) {
+            fprintf(spec_lineshape, "%g %g\n", freq, Ftcf[i]/(factor*(ntcfpoints+nzeros)));
+            fprintf(vv_lineshape, "%g %g\n", freq, Ftcfvv[i]/(factor*(ntcfpoints+nzeros)));
+            fprintf(vh_lineshape, "%g %g\n", freq, Ftcfvh[i]/(factor*(ntcfpoints+nzeros)));
+        }
     }
     fclose(spec_lineshape);
-
-    // Write the VV Raman lineshape
-    vv_lineshape = fopen(strcat(strcpy(fname,outf),"vv.dat"),"w");
-    for ( int i = (ntcfpoints+nzeros)/2; i < ntcfpoints+nzeros; i++ )   // "negative" FFT frequencies
-    {
-        freq = -1*(i-ntcfpoints-nzeros)*factor + avef;
-        if ( freq <= (user_real_t) omegaStop  ) fprintf(vv_lineshape, "%g %g\n", freq, Ftcfvv[i]/(factor*(ntcfpoints+nzeros)));
-    }
-    for ( int i = 0; i < ntcfpoints+nzeros / 2 ; i++)                   // "positive" FFT frequencies
-    {
-        freq = -1*i*factor + avef;
-        if ( freq >= (user_real_t) omegaStart) fprintf(vv_lineshape, "%g %g\n", freq, Ftcfvv[i]/(factor*(ntcfpoints+nzeros)));
-    }
     fclose(vv_lineshape);
-
-    // Write the VH Raman lineshape
-    vh_lineshape = fopen(strcat(strcpy(fname,outf),"vh.dat"),"w");
-    for ( int i = (ntcfpoints+nzeros)/2; i < ntcfpoints+nzeros; i++ )   // "negative" FFT frequencies
-    {
-        freq = -1*(i-ntcfpoints-nzeros)*factor + avef;
-        if ( freq <= (user_real_t) omegaStop  ) fprintf(vh_lineshape, "%g %g\n", freq, Ftcfvh[i]/(factor*(ntcfpoints+nzeros)));
-    }
-    for ( int i = 0; i < ntcfpoints+nzeros / 2 ; i++)                   // "positive" FFT frequencies
-    {
-        freq = -1*i*factor + avef;
-        if ( freq >= (user_real_t) omegaStart) fprintf(vh_lineshape, "%g %g\n", freq, Ftcfvh[i]/(factor*(ntcfpoints+nzeros)));
-    }
     fclose(vh_lineshape);
 
 
@@ -1068,9 +1170,6 @@ int main(int argc, char *argv[])
 
     cudaFree(x_d);
     cudaFree(Ftcf_d);
-    cudaFree(tcf_d);
-    cudaFree(tcfvv_d);
-    cudaFree(tcfvh_d);
     cudaFree(mux_d); 
     cudaFree(muy_d);
     cudaFree(muz_d);
@@ -1774,9 +1873,9 @@ void printProgress( int currentStep, int totalSteps )
 void checkpoint( char *argv[], char gmxf[], char cptf[], char outf[], char model[], int *ifintmeth, user_real_t *dt, int *ntcfpoints, 
                  int *nsamples, int *sampleEvery, user_real_t *t1, user_real_t *avef, int *omegaStart, int *omegaStop, int *omegaStep,
                  int *natom_mol, int *nchrom_mol, int *nzeros, user_real_t *beginTime, int *SPECD_FLAG, user_real_t *max_int_steps, int nchrom, int nomega,
-                 int *currentSample, int *currentFrame, user_complex_t *tcf, user_real_t *Sw, user_complex_t *F_d, user_complex_t *cmux0_d,
-                 user_complex_t *cmuy0_d, user_complex_t *cmuz0_d, user_complex_t *caxx0_d, user_complex_t *cayy0_d, user_complex_t *cazz0_d, 
-                 user_complex_t *caxy0_d, user_complex_t *cayz0_d, user_complex_t *cazx0_d, int RWI_FLAG )
+                 int *currentSample, int *currentFrame, user_complex_t *tcf, user_complex_t *tcfvv, user_complex_t *tcfvh, user_real_t *Sw, 
+                 user_complex_t *F_d, user_complex_t *cmux0_d, user_complex_t *cmuy0_d, user_complex_t *cmuz0_d, user_complex_t *caxx0_d, 
+                 user_complex_t *cayy0_d, user_complex_t *cazz0_d, user_complex_t *caxy0_d, user_complex_t *cayz0_d, user_complex_t *cazx0_d, int RWI_FLAG )
 {
 
     FILE *cptfp;                // checkpoint file pointer
@@ -1820,7 +1919,9 @@ void checkpoint( char *argv[], char gmxf[], char cptf[], char outf[], char model
         // Write the current configuration
         fwrite( currentSample,  sizeof(int)         , 1, cptfp );         // current sample number
         fwrite( currentFrame ,  sizeof(int)         , 1, cptfp );         // current frame  number
-        fwrite( tcf, sizeof(user_complex_t), *ntcfpoints, cptfp );         // current time correlation function
+        fwrite( tcf, sizeof(user_complex_t), *ntcfpoints, cptfp );        // current time correlation function
+        fwrite( tcfvv, sizeof(user_complex_t), *ntcfpoints, cptfp );      // current time correlation function
+        fwrite( tcfvh, sizeof(user_complex_t), *ntcfpoints, cptfp );      // current time correlation function
         if ( *SPECD_FLAG ){
             fwrite( Sw,  sizeof(user_real_t),    nomega    , cptfp );     // current spectral density
         }
@@ -1916,7 +2017,9 @@ void checkpoint( char *argv[], char gmxf[], char cptf[], char outf[], char model
                 // Write the current configuration
                 fread( currentSample,  sizeof(int)         , 1, cptfp );         // current sample number
                 fread( currentFrame ,  sizeof(int)         , 1, cptfp );         // current frame  number
-                fread( tcf, sizeof(user_complex_t), *ntcfpoints, cptfp );         // current time correlation function
+                fread( tcf, sizeof(user_complex_t), *ntcfpoints, cptfp );        // current time correlation function
+                fread( tcfvv, sizeof(user_complex_t), *ntcfpoints, cptfp );      // current time correlation function
+                fread( tcfvh, sizeof(user_complex_t), *ntcfpoints, cptfp );      // current time correlation function
                 if ( *SPECD_FLAG ){
                     fread( Sw,  sizeof(user_real_t),    nomega    , cptfp );     // current spectral density
                 }

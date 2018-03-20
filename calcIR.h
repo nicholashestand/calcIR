@@ -119,9 +119,9 @@ void printProgress( int currentStep, int totalSteps );
 void checkpoint( char *argv[], char gmxf[], char cptf[], char outf[], char model[], int *ifintmeth, user_real_t *dt, int *ntcfpoints, 
                  int *nsamples, int *sampleEvery, user_real_t *t1, user_real_t *avef, int *omegaStart, int *omegaStop, int *omegaStep,
                  int *natom_mol, int *nchrom_mol, int *nzeros, user_real_t *beginTime, int *SPECD_FLAG, user_real_t *max_int_steps, int nchrom, int nomega, 
-                 int *currentSample, int *currentFrame, user_complex_t *tcf, user_real_t *Sw, user_complex_t *F_d, user_complex_t *cmux0_d,
-                 user_complex_t *cmuy0_d, user_complex_t *cmuz0_d, user_complex_t *caxx0_d, user_complex_t *cayy0_d, user_complex_t *cazz0_d, 
-                 user_complex_t *caxy0_d, user_complex_t *cayz0_d, user_complex_t *cazx0_d, int RWI_FLAG );
+                 int *currentSample, int *currentFrame, user_complex_t *tcf, user_complex_t *tcf_vv, user_complex_t *tcf_vh, user_real_t *Sw, 
+                 user_complex_t *F_d, user_complex_t *cmux0_d, user_complex_t *cmuy0_d, user_complex_t *cmuz0_d, user_complex_t *caxx0_d, 
+                 user_complex_t *cayy0_d, user_complex_t *cazz0_d, user_complex_t *caxy0_d, user_complex_t *cayz0_d, user_complex_t *cazx0_d, int RWI_FLAG );
 
 void signal_handler( int sig );
 #endif
