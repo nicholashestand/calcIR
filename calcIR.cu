@@ -140,6 +140,8 @@ int main(int argc, char *argv[])
     const int           ntcfpointsR     = ( nzeros + ntcfpoints - 1 ) * 2;              // number of points for the real fourier transform
     const int           nomega          = ( omegaStop - omegaStart ) / omegaStep + 1;   // number of frequencies for the spectral density
     magma_int_t         nchrom2;                                                        // nchrom squared
+    const float         tprec = 1E-4;                                                   // precision for gmx time
+    float               desired_time;                                                   // desired time for the current frame
 
 
     // Trajectory variables for the CPU
@@ -401,7 +403,9 @@ int main(int argc, char *argv[])
             exit(EXIT_FAILURE);
         }
 
-        if ( currentSample * sampleEvery + (int) beginTime == (int) gmxtime )
+        desired_time = currentSample * sampleEvery + beginTime;
+        if ( fabs ( desired_time - gmxtime ) < tprec )
+        //if ( currentSample * sampleEvery + (int) beginTime == (int) gmxtime )
         {
             printf("\n    Now processing sample %d/%d starting at %.2f ps\n", currentSample + 1, nsamples, gmxtime );
             fflush(stdout);
@@ -432,8 +436,13 @@ int main(int argc, char *argv[])
 
 
             // read the current frame from the trajectory file and copy to device memory
+            desired_time = currentSample * sampleEvery + beginTime + dt * currentFrame;
             // note it was read in the outer loop if we are at frame 0
             if ( currentFrame != 0 ) read_xtc( trj, natoms, &step, &gmxtime, box, x, &prec );
+            
+            // make sure that the time is consistent with dt -- only proceed if we are at the desired time
+            if ( fabs( desired_time - gmxtime ) > tprec ) continue;
+            
             cudaMemcpy( x_d, x, natoms*sizeof(x[0]), cudaMemcpyHostToDevice );
 
             // allocate space for hamiltonian on the GPU if acively managing GPU memory
@@ -1119,7 +1128,7 @@ int main(int argc, char *argv[])
     // write the spectral density
     if ( SPECD_FLAG )
     {
-        spec_density = fopen(strcat(strcpy(fname,outf),"spdn.dat"), "w");
+        spec_density = fopen(strcat(strcpy(fname,outf),"_spdn.dat"), "w");
         for ( int i = 0; i < nomega; i++) fprintf(spec_density, "%g %g\n", omega[i], Sw[i]);
         fclose(spec_density);
     }
