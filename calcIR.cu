@@ -52,11 +52,12 @@ int main(int argc, char *argv[])
     printf("\n>>> Setting default parameters\n");
 
     // Model parameters
-    char          gmxf[MAX_STR_LEN]; strncpy( gmxf, " ", MAX_STR_LEN );   // trajectory file
-    char          outf[MAX_STR_LEN]; strncpy( outf, " ", MAX_STR_LEN );   // name for output files
-    char          cptf[MAX_STR_LEN]; strncpy( cptf, " ", MAX_STR_LEN );   // name for output files
-    char          model[MAX_STR_LEN];strncpy( model," ", MAX_STR_LEN );   // water model tip4p, tip4p2005, e3b2, e3b3
+    char          gmxf[MAX_STR_LEN]; strncpy( gmxf, "traj.xtc", MAX_STR_LEN );   // trajectory file
+    char          outf[MAX_STR_LEN]; strncpy( outf, "spec", MAX_STR_LEN );   // name for output files
+    char          cptf[MAX_STR_LEN]; strncpy( cptf, "spec", MAX_STR_LEN );   // name for output files
+    char          model[MAX_STR_LEN];strncpy( model,"e3b3", MAX_STR_LEN );   // water model tip4p, tip4p2005, e3b2, e3b3
     int           imodel        = 0;                                      // integer for water model
+    int           ispecies      = 0;                                      // integer for species of interest
     int           SPECD_FLAG    = 1;                                      // calculate the spectral density
     int           ifintmeth     = 0;                                      // integration method, 0 exact, 1 adams-bashforth
     int           ntcfpoints    = 150 ;                                   // the number of tcf points for each spectrum
@@ -76,6 +77,7 @@ int main(int argc, char *argv[])
     user_real_t   avef          = 3415.2;                                 // the approximate average stretch frequency to get rid of high
                                                                           // frequency oscillations in the time correlation function
     user_real_t   max_int_steps = 4.0;                                    // number of Adams integration steps between each dt
+    char          species[MAX_STR_LEN]; strncpy( species, " ", MAX_STR_LEN ); // species HOD/H2O HOD/D2O H2O D2O
 
  
     // read in model parameters
@@ -84,14 +86,14 @@ int main(int argc, char *argv[])
         // START FROM INPUT FILE
         ir_init( argv, gmxf, cptf, outf, model, &ifintmeth, &dt, &ntcfpoints, &nsamples, &sampleEvery, &t1, 
                 &avef, &omegaStart, &omegaStop, &omegaStep, &natom_mol, &nchrom_mol, &nzeros, &beginTime,
-                &SPECD_FLAG, &max_int_steps);
+                &SPECD_FLAG, &max_int_steps, species );
     }
     else
     {
         // START FROM CHECKPOINT FILE
         checkpoint( argv, gmxf, cptf, outf, model, &ifintmeth, &dt, &ntcfpoints, &nsamples, &sampleEvery, &t1, 
                     &avef, &omegaStart, &omegaStop, &omegaStep, &natom_mol, &nchrom_mol, &nzeros, &beginTime,
-                    &SPECD_FLAG, &max_int_steps, 0, 0, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, 
+                    &SPECD_FLAG, &max_int_steps, species, 0, 0, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, 
                     NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, CP_INIT );
         // nsamples = 11; -- testing
     }
@@ -113,6 +115,7 @@ int main(int argc, char *argv[])
     printf("\tSetting nchrom_mol to %d\n",                  nchrom_mol  );
     printf("\tSetting nzeros to %d\n",                      nzeros      );
     printf("\tSetting SPECD_FLAG to %d\n",                  SPECD_FLAG  );
+    printf("\tSetting species to %s\n",                     species     );
 #ifdef USE_DOUBLES
     printf("\tSetting dt to %lf\n",                         dt          );
     printf("\tSetting t1 to %lf (ps)\n",                    t1          );
@@ -127,10 +130,6 @@ int main(int argc, char *argv[])
     printf("\tSetting max_int_steps to %f\n",               max_int_steps );
 #endif
 
-    // set imodel based on model passed...if 1, reset OM lengths to tip4p lengths
-    if ( strcmp( model, "tip4p2005" ) == 0 || strcmp( model, "e3b3" ) == 0 ) imodel = 1;
-    else imodel = 0;
- 
 
 
     // Useful variables and condstants
@@ -377,12 +376,27 @@ int main(int argc, char *argv[])
         // read in checkpoint file
         checkpoint( argv, gmxf, cptf, outf, model, &ifintmeth, &dt, &ntcfpoints, &nsamples, &sampleEvery, &t1, 
                     &avef, &omegaStart, &omegaStop, &omegaStep, &natom_mol, &nchrom_mol, &nzeros, &beginTime,
-                    &SPECD_FLAG, &max_int_steps, nchrom, nomega, &currentSample, &currentFrame, tcf, tcfvv, tcfvh,
+                    &SPECD_FLAG, &max_int_steps, species, nchrom, nomega, &currentSample, &currentFrame, tcf, tcfvv, tcfvh,
                     Sw, F_d, cmux0_d, cmuy0_d, cmuz0_d, caxx0_d, cayy0_d, cazz0_d, caxy0_d, cayz0_d, cazx0_d, CP_READ );
     }
     // **************************************************** //
 
-
+    // set imodel based on model passed...if 1, reset OM lengths to tip4p lengths
+    if ( strcmp( model, "tip4p2005" ) == 0 || strcmp( model, "e3b3" ) == 0 ) imodel = 1;
+    else if ( strcmp( model, "tip4p" ) == 0 || strcmp( model, "e3b2" ) == 0 )imodel = 0;
+    else{
+        printf("WARNING: model: %s is not recognized. Check input file. Aborting...\n", model );
+        exit(EXIT_FAILURE);
+    }
+    // set ispecies based on species passed... 0 H2O, 1 HOD in D2O, 2 HOD in H2O, 3 D2O;
+    if ( strcmp( species, "H2O" ) == 0 )        ispecies = 0;
+    else if ( strcmp( species, "HOD/D2O" ) == 0 )    ispecies = 1;
+    else if ( strcmp( species, "HOD/H2O" ) == 0 )    ispecies = 2;
+    else if ( strcmp( species, "D2O" ) == 0 )        ispecies = 3;
+    else{
+        printf("WARNING: species: %s is not recognized. Check input file. Aborting...\n", species );
+        exit(EXIT_FAILURE);
+    }
 
     
     printf("\n>>> Now calculating the absorption spectrum\n");
@@ -424,7 +438,7 @@ int main(int argc, char *argv[])
             {
                 checkpoint( argv, gmxf, cptf, outf, model, &ifintmeth, &dt, &ntcfpoints, &nsamples, &sampleEvery, &t1, 
                             &avef, &omegaStart, &omegaStop, &omegaStep, &natom_mol, &nchrom_mol, &nzeros, &beginTime,
-                            &SPECD_FLAG, &max_int_steps, nchrom, nomega, &currentSample, &currentFrame, tcf, tcfvv, tcfvh,
+                            &SPECD_FLAG, &max_int_steps, species, nchrom, nomega, &currentSample, &currentFrame, tcf, tcfvv, tcfvh,
                             Sw, F_d, cmux0_d, cmuy0_d, cmuz0_d, caxx0_d, cayy0_d, cazz0_d, caxy0_d, cayz0_d, cazx0_d, CP_WRITE );
                 exit(EXIT_SUCCESS);
             }
@@ -451,7 +465,7 @@ int main(int argc, char *argv[])
             // launch kernel to calculate the electric field projection along OH bonds and build the exciton hamiltonian
             get_eproj_GPU <<<numBlocks,blockSize>>> ( x_d, box[0][0], box[1][1], box[2][2], natoms, natom_mol, nchrom, nchrom_mol, nmol, imodel, eproj_d );
             get_kappa_GPU <<<numBlocks,blockSize>>> ( x_d, box[0][0], box[1][1], box[2][2], natoms, natom_mol, nchrom, nchrom_mol, nmol, eproj_d, kappa_d, 
-                                                      mux_d, muy_d, muz_d, axx_d, ayy_d, azz_d, axy_d, ayz_d, azx_d, avef );
+                                                      mux_d, muy_d, muz_d, axx_d, ayy_d, azz_d, axy_d, ayz_d, azx_d, avef, ispecies);
 
 
             // ***          Done getting System Info            *** //
@@ -1007,7 +1021,7 @@ int main(int argc, char *argv[])
         // checkpoint after every sample
         checkpoint( argv, gmxf, cptf, outf, model, &ifintmeth, &dt, &ntcfpoints, &nsamples, &sampleEvery, &t1, 
                     &avef, &omegaStart, &omegaStop, &omegaStep, &natom_mol, &nchrom_mol, &nzeros, &beginTime,
-                    &SPECD_FLAG, &max_int_steps, nchrom, nomega, &currentSample, &currentFrame, tcf, tcfvv, tcfvh,
+                    &SPECD_FLAG, &max_int_steps, species, nchrom, nomega, &currentSample, &currentFrame, tcf, tcfvv, tcfvh,
                     Sw, F_d, cmux0_d, cmuy0_d, cmuz0_d, caxx0_d, cayy0_d, cazz0_d, caxy0_d, cayz0_d, cazx0_d, CP_WRITE );
 
         }
@@ -1432,7 +1446,7 @@ void get_eproj_GPU( rvec *x, float boxx, float boxy, float boxz, int natoms, int
 __global__
 void get_kappa_GPU( rvec *x, float boxx, float boxy, float boxz, int natoms, int natom_mol, int nchrom, int nchrom_mol, int nmol, 
                     user_real_t *eproj, user_real_t *kappa, user_real_t *mux, user_real_t *muy, user_real_t *muz, user_real_t *axx,
-                    user_real_t *ayy, user_real_t *azz, user_real_t *axy, user_real_t *ayz, user_real_t *azx, user_real_t avef)
+                    user_real_t *ayy, user_real_t *azz, user_real_t *axy, user_real_t *ayz, user_real_t *azx, user_real_t avef, int ispecies )
 {
     
     int n, m, istart, istride;
@@ -1467,9 +1481,18 @@ void get_kappa_GPU( rvec *x, float boxx, float boxy, float boxz, int natoms, int
         En  = eproj[chromn];
 
         // build the map
-        wn  = 3760.2 - 3541.7*En - 152677.0*En*En;
-        xn  = 0.19285 - 1.7261E-5 * wn;
-        pn  = 1.6466  + 5.7692E-4 * wn;
+        if ( ispecies == 0 || ispecies == 1 ){
+            // here we care about h2o maps
+            wn  = 3760.2 - 3541.7*En - 152677.0*En*En;
+            xn  = 0.19285 - 1.7261E-5 * wn;
+            pn  = 1.6466  + 5.7692E-4 * wn;
+        }
+        else if ( ispecies == 2 || ispecies == 3 ){
+            // here we care about h2o maps
+            wn  = 2767.8 - 2630.3*En - 102601.0*En*En;
+            xn  = 0.16593 - 2.0632E-5 * wn;
+            pn  = 2.0475  + 8.9108E-4 * wn;
+        }
         nmuprime = 0.1646 + 11.39*En + 63.41*En*En;
 
         // and calculate the location of the transition dipole moment
@@ -1526,9 +1549,18 @@ void get_kappa_GPU( rvec *x, float boxx, float boxy, float boxz, int natoms, int
             Em  = eproj[chromm];
 
             // also get the relevent x and p from the map
-            wm  = 3760.2 - 3541.7*Em - 152677.0*Em*Em;
-            xm  = 0.19285 - 1.7261E-5 * wm;
-            pm  = 1.6466  + 5.7692E-4 * wm;
+            if ( ispecies == 0 || ispecies == 1 ){
+                // here we care about h2o maps
+                wm  = 3760.2 - 3541.7*Em - 152677.0*Em*Em;
+                xm  = 0.19285 - 1.7261E-5 * wm;
+                pm  = 1.6466  + 5.7692E-4 * wm;
+            }
+            else if ( ispecies == 2 || ispecies == 3 ){
+                // here we care about h2o maps
+                wm  = 2767.8 - 2630.3*Em - 102601.0*Em*Em;
+                xm  = 0.16593 - 2.0632E-5 * wm;
+                pm  = 2.0475  + 8.9108E-4 * wm;
+            }
             mmuprime = 0.1646 + 11.39*Em + 63.41*Em*Em;
 
             // the diagonal energy
@@ -1541,61 +1573,77 @@ void get_kappa_GPU( rvec *x, float boxx, float boxy, float boxz, int natoms, int
             // intramolecular coupling
             else if ( m == n )
             {
-                kappa[chromn*nchrom + chromm]   =  (-1361.0 + 27165*(En + Em))*xn*xm - 1.887*pn*pm;
+                // ** -- 
+                // if is HOD/H2O or HOD/D2O, no coupling
+                if ( ispecies == 1 || ispecies == 2  ){
+                    kappa[chromn * nchrom + chromm ] = 0.;
+                }
+                // ** --
+                else{
+                    kappa[chromn*nchrom + chromm]   =  (-1361.0 + 27165*(En + Em))*xn*xm - 1.887*pn*pm;
+                }
             }
 
             // intermolecular coupling
             else
             {
+                // ** -- 
+                // if is HOD/H2O or HOD/D2O, no coupling
+                if ( ispecies == 1 || ispecies == 2  ){
+                    kappa[chromn * nchrom + chromm ] = 0.;
+                }
+                // ** --
                 
-                // calculate the distance between dipoles
-                // they are located 0.67 A from the oxygen along the OH bond
-                // tdm position on chromophore n
-                mox[0]  = x[ m*natom_mol ][0];
-                mox[1]  = x[ m*natom_mol ][1];
-                mox[2]  = x[ m*natom_mol ][2];
-                if ( chromm % 2 == 0 )       //HW1
-                {
-                    mhx[0]  = x[ m*natom_mol + 1 ][0];
-                    mhx[1]  = x[ m*natom_mol + 1 ][1];
-                    mhx[2]  = x[ m*natom_mol + 1 ][2];
+                else{
+                    // calculate the distance between dipoles
+                    // they are located 0.67 A from the oxygen along the OH bond
+                    // tdm position on chromophore n
+                    mox[0]  = x[ m*natom_mol ][0];
+                    mox[1]  = x[ m*natom_mol ][1];
+                    mox[2]  = x[ m*natom_mol ][2];
+                    if ( chromm % 2 == 0 )       //HW1
+                    {
+                        mhx[0]  = x[ m*natom_mol + 1 ][0];
+                        mhx[1]  = x[ m*natom_mol + 1 ][1];
+                        mhx[2]  = x[ m*natom_mol + 1 ][2];
+                    }
+                    else if ( chromm % 2 == 1 )  //HW2
+                    {
+                        mhx[0]  = x[ m*natom_mol + 2 ][0];
+                        mhx[1]  = x[ m*natom_mol + 2 ][1];
+                        mhx[2]  = x[ m*natom_mol + 2 ][2];
+                    }
+
+                    // The OH unit vector
+                    moh[0] = minImage( mhx[0] - mox[0], boxx );
+                    moh[1] = minImage( mhx[1] - mox[1], boxy );
+                    moh[2] = minImage( mhx[2] - mox[2], boxz );
+                    r      = mag3(moh);
+                    moh[0] /= r;
+                    moh[1] /= r;
+                    moh[2] /= r;
+
+                    // The location of the TDM and the dipole derivative
+                    mmu[0] = minImage( mox[0] + 0.067 * moh[0], boxx );
+                    mmu[1] = minImage( mox[1] + 0.067 * moh[1], boxy );
+                    mmu[2] = minImage( mox[2] + 0.067 * moh[2], boxz );
+
+                    // the distance between TDM on N and on M and convert to unit vector
+                    dr[0] = minImage( nmu[0] - mmu[0], boxx );
+                    dr[1] = minImage( nmu[1] - mmu[1], boxy );
+                    dr[2] = minImage( nmu[2] - mmu[2], boxz );
+                    r     = mag3( dr );
+                    dr[0] /= r;
+                    dr[1] /= r;
+                    dr[2] /= r;
+                    r     *= bohr_nm; // convert to bohr
+
+                    // The coupling in the transition dipole approximation in wavenumber
+                    // Note the conversion to wavenumber
+                    kappa[chromn*nchrom + chromm]   = ( dot3( noh, moh ) - 3.0 * dot3( noh, dr ) * 
+                                                        dot3( moh, dr ) ) / ( r*r*r ) * 
+                                                        xn*xm*nmuprime*mmuprime*cm_hartree;
                 }
-                else if ( chromm % 2 == 1 )  //HW2
-                {
-                    mhx[0]  = x[ m*natom_mol + 2 ][0];
-                    mhx[1]  = x[ m*natom_mol + 2 ][1];
-                    mhx[2]  = x[ m*natom_mol + 2 ][2];
-                }
-
-                // The OH unit vector
-                moh[0] = minImage( mhx[0] - mox[0], boxx );
-                moh[1] = minImage( mhx[1] - mox[1], boxy );
-                moh[2] = minImage( mhx[2] - mox[2], boxz );
-                r      = mag3(moh);
-                moh[0] /= r;
-                moh[1] /= r;
-                moh[2] /= r;
-
-                // The location of the TDM and the dipole derivative
-                mmu[0] = minImage( mox[0] + 0.067 * moh[0], boxx );
-                mmu[1] = minImage( mox[1] + 0.067 * moh[1], boxy );
-                mmu[2] = minImage( mox[2] + 0.067 * moh[2], boxz );
-
-                // the distance between TDM on N and on M and convert to unit vector
-                dr[0] = minImage( nmu[0] - mmu[0], boxx );
-                dr[1] = minImage( nmu[1] - mmu[1], boxy );
-                dr[2] = minImage( nmu[2] - mmu[2], boxz );
-                r     = mag3( dr );
-                dr[0] /= r;
-                dr[1] /= r;
-                dr[2] /= r;
-                r     *= bohr_nm; // convert to bohr
-
-                // The coupling in the transition dipole approximation in wavenumber
-                // Note the conversion to wavenumber
-                kappa[chromn*nchrom + chromm]   = ( dot3( noh, moh ) - 3.0 * dot3( noh, dr ) * 
-                                                    dot3( moh, dr ) ) / ( r*r*r ) * 
-                                                    xn*xm*nmuprime*mmuprime*cm_hartree;
             }// end intramolecular coupling
         }// end loop over chromm
     }// end loop over reference
@@ -1734,7 +1782,7 @@ void makeI ( user_complex_t *mat, int n )
 void ir_init( char *argv[], char gmxf[], char cptf[], char outf[], char model[], int *ifintmeth, user_real_t *dt, int *ntcfpoints, 
               int *nsamples, int *sampleEvery, user_real_t *t1, user_real_t *avef, int *omegaStart, int *omegaStop, 
               int *omegaStep, int *natom_mol, int *nchrom_mol, int *nzeros, user_real_t *beginTime, int *SPECD_FLAG,
-              user_real_t *max_int_steps)
+              user_real_t *max_int_steps, char species[] )
 {
     char                para[MAX_STR_LEN];
     char                value[MAX_STR_LEN];
@@ -1811,6 +1859,10 @@ void ir_init( char *argv[], char gmxf[], char cptf[], char outf[], char model[],
         {
             sscanf( value, "%d", (int *) SPECD_FLAG);
         }
+        else if ( strcmp(para,"species") == 0 )
+        {
+            sscanf( value, "%s", species );
+        }
 #ifdef USE_DOUBLES
         else if ( strcmp(para,"dt") == 0 )
         {
@@ -1881,7 +1933,7 @@ void printProgress( int currentStep, int totalSteps )
 // Checkpoint the simulation
 void checkpoint( char *argv[], char gmxf[], char cptf[], char outf[], char model[], int *ifintmeth, user_real_t *dt, int *ntcfpoints, 
                  int *nsamples, int *sampleEvery, user_real_t *t1, user_real_t *avef, int *omegaStart, int *omegaStop, int *omegaStep,
-                 int *natom_mol, int *nchrom_mol, int *nzeros, user_real_t *beginTime, int *SPECD_FLAG, user_real_t *max_int_steps, int nchrom, int nomega,
+                 int *natom_mol, int *nchrom_mol, int *nzeros, user_real_t *beginTime, int *SPECD_FLAG, user_real_t *max_int_steps, char species[], int nchrom, int nomega,
                  int *currentSample, int *currentFrame, user_complex_t *tcf, user_complex_t *tcfvv, user_complex_t *tcfvh, user_real_t *Sw, 
                  user_complex_t *F_d, user_complex_t *cmux0_d, user_complex_t *cmuy0_d, user_complex_t *cmuz0_d, user_complex_t *caxx0_d, 
                  user_complex_t *cayy0_d, user_complex_t *cazz0_d, user_complex_t *caxy0_d, user_complex_t *cayz0_d, user_complex_t *cazx0_d, int RWI_FLAG )
@@ -1918,6 +1970,8 @@ void checkpoint( char *argv[], char gmxf[], char cptf[], char outf[], char model
         fwrite( nchrom_mol  , sizeof(int)           , 1, cptfp );         // chromophores per molecule
         fwrite( nzeros      , sizeof(int)           , 1, cptfp );         // number of zeros to pad the tcf before FT
         fwrite( SPECD_FLAG  , sizeof(int)           , 1, cptfp );         // switch to calculate spectral density
+        fwrite( species     , MAX_STR_LEN           , 1, cptfp );         // species to calculate
+
 
         fwrite( max_int_steps, sizeof(user_real_t)  , 1, cptfp );         // max integration steps if using adams/bashforth integration
         fwrite( t1          , sizeof(user_real_t)   , 1, cptfp );         // relaxation time
@@ -2003,6 +2057,7 @@ void checkpoint( char *argv[], char gmxf[], char cptf[], char outf[], char model
                 fread( nchrom_mol  , sizeof(int)           , 1, cptfp );         // chromophores per molecule
                 fread( nzeros      , sizeof(int)           , 1, cptfp );         // number of zeros to pad the tcf before FT -- TODO: Doesn't need to be the same
                 fread( SPECD_FLAG  , sizeof(int)           , 1, cptfp );         // switch to calculate spectral density
+                fread( species     , MAX_STR_LEN           , 1, cptfp );         // which species to calculate
 
                 fread( max_int_steps,sizeof(user_real_t)   , 1, cptfp );         // max integration steps if using adams/bashforth integration
                 fread( t1          , sizeof(user_real_t)   , 1, cptfp );         // relaxation time -- TODO: Doesn't need to be the same
