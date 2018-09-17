@@ -1044,9 +1044,9 @@ int main(int argc, char *argv[])
     for ( int i = 0; i < ntcfpoints; i++ )
     {
         // multiply the tcf by the relaxation term
-        dcy      = MAGMA_MAKE(exp( -1.0 * i * dt / ( 2.0 * t1 )), 0.0);
+        dcy      = MAGMA_MAKE(exp( -1.0 * i * dt / ( 2.0 * t1 ))/(1.*nsamples), 0.0);
         tcf[i]   = MAGMA_MUL( tcf[i], dcy );
-        pdtcf[i] = MAGMA_DIV(tcf[i], MAGMA_MAKE( nsamples, 0.0 ));
+        pdtcf[i] = tcf[i];
     }
     for ( int i = 0; i < nzeros; i++ ) pdtcf[i+ntcfpoints] = MAGMA_ZERO;
 
@@ -1069,9 +1069,9 @@ int main(int argc, char *argv[])
     for ( int i = 0; i < ntcfpoints; i++ )
     {
         // multiply the tcf by the relaxation term
-        dcy      = MAGMA_MAKE(exp( -1.0 * i * dt / ( 2.0 * t1 )), 0.0);
+        dcy      = MAGMA_MAKE(exp( -1.0 * i * dt / ( 2.0 * t1 ))/(1.*nsamples), 0.0);
         tcfvv[i] = MAGMA_MUL( tcfvv[i], dcy );
-        pdtcf[i] = MAGMA_DIV( tcfvv[i], MAGMA_MAKE( nsamples, 0.0 ));
+        pdtcf[i] = tcfvv[i];
     }
     for ( int i = 0; i < nzeros; i++ ) pdtcf[i+ntcfpoints] = MAGMA_ZERO;
     cudaMemcpy( pdtcf_d, pdtcf, (ntcfpoints+nzeros)*sizeof(user_complex_t), cudaMemcpyHostToDevice );
@@ -1090,9 +1090,9 @@ int main(int argc, char *argv[])
     for ( int i = 0; i < ntcfpoints; i++ )
     {
         // multiply the tcf by the relaxation term
-        dcy      = MAGMA_MAKE(exp( -1.0 * i * dt / ( 2.0 * t1 )), 0.0);
+        dcy      = MAGMA_MAKE(exp( -1.0 * i * dt / ( 2.0 * t1 ))/(1.*nsamples), 0.0);
         tcfvh[i] = MAGMA_MUL( tcfvh[i], dcy );
-        pdtcf[i] = MAGMA_DIV(tcfvh[i], MAGMA_MAKE( nsamples, 0.0 ));
+        pdtcf[i] = tcfvh[i];
     }
     for ( int i = 0; i < nzeros; i++ ) pdtcf[i+ntcfpoints] = MAGMA_ZERO;
     cudaMemcpy( pdtcf_d, pdtcf, (ntcfpoints+nzeros)*sizeof(user_complex_t), cudaMemcpyHostToDevice );
