@@ -13,8 +13,6 @@ volatile sig_atomic_t interrupted=false;
 
 // TODO: ALLOW SOME PARAMETERS TO CHANGE WHEN STARTING FROM CPT, if desired
 // TODO: TEST MRRR diagonalization routine to see if faster
-// TODO: PUT IN FREQUENCY BINS
-
 
 int main(int argc, char *argv[])
 {
@@ -64,8 +62,8 @@ int main(int argc, char *argv[])
     int           nsamples      = 1   ;                                   // number of samples to average for the total spectrum
     int           sampleEvery   = 10  ;                                   // sample a new configuration every sampleEvery ps. Note the way the program is written, 
                                                                           // ntcfpoints*dt must be less than sampleEvery.
-    int           omegaStart    = 2000;                                   // starting frequency for spectral density
-    int           omegaStop     = 5000;                                   // ending frequency for spectral density
+    user_real_t   omegaStart    = 2000;                                   // starting frequency for spectral density
+    user_real_t   omegaStop     = 5000;                                   // ending frequency for spectral density
     int           omegaStep     = 5;                                      // resolution for spectral density
     int           natom_mol     = 4;                                      // Atoms per water molecule  :: MODEL DEPENDENT
     int           nchrom_mol    = 2;                                      // Chromophores per molecule :: TWO for stretch -- ONE for bend
@@ -108,8 +106,6 @@ int main(int argc, char *argv[])
     printf("\tSetting the number of tcf points to %d\n",    ntcfpoints  );
     printf("\tSetting nsamples to %d\n",                    nsamples    ); 
     printf("\tSetting sampleEvery to %d (ps)\n",            sampleEvery );
-    printf("\tSetting omegaStart to %d\n",                  omegaStart  );
-    printf("\tSetting omegaStop to %d\n",                   omegaStop   );
     printf("\tSetting omegaStep to %d\n",                   omegaStep   );
     printf("\tSetting natom_mol to %d\n",                   natom_mol   );
     printf("\tSetting nchrom_mol to %d\n",                  nchrom_mol  );
@@ -117,12 +113,16 @@ int main(int argc, char *argv[])
     printf("\tSetting SPECD_FLAG to %d\n",                  SPECD_FLAG  );
     printf("\tSetting species to %s\n",                     species     );
 #ifdef USE_DOUBLES
+    printf("\tSetting omegaStart to %lf\n",                  omegaStart  );
+    printf("\tSetting omegaStop to %lf\n",                   omegaStop   );
     printf("\tSetting dt to %lf\n",                         dt          );
     printf("\tSetting t1 to %lf (ps)\n",                    t1          );
     printf("\tSetting avef to %lf\n",                       avef        );
     printf("\tSetting equilibration time to %lf (ps)\n",    beginTime   );
     printf("\tSetting max_int_steps to %lf\n",              max_int_steps );
 #else
+    printf("\tSetting omegaStart to %f\n",                  omegaStart  );
+    printf("\tSetting omegaStop to %f\n",                   omegaStop   );
     printf("\tSetting dt to %f\n",                          dt          );
     printf("\tSetting t1 to %f (ps)\n",                     t1          );
     printf("\tSetting avef to %f\n",                        avef        );
@@ -166,6 +166,7 @@ int main(int argc, char *argv[])
     user_real_t         *MUX_d, *MUY_d, *MUZ_d;                                         // transition dipole moments in the eigen basis
     user_real_t         *eproj_d;                                                       // the electric field projected along the oh bonds
     user_real_t         *kappa_d;                                                       // the hamiltonian on the GPU
+    user_real_t         *kappa;
 
 
     // GPU variables for Adams integration
@@ -180,6 +181,7 @@ int main(int argc, char *argv[])
     magma_int_t         *iwork;                                                         // Work array
     user_real_t         *work;                                                          // Work array
     user_real_t         *w   ;                                                          // Eigenvalues
+    user_real_t         wi   ;                                                          // Eigenvalues
     user_real_t         *wA  ;                                                          // Work array
     int                 SSYEVD_ALLOC_FLAG = 1;                                          // flag whether to allocate ssyevr arrays -- it is turned off after they are allocated
 
@@ -192,6 +194,11 @@ int main(int argc, char *argv[])
     user_real_t         *omega, *omega_d;                                               // Frequencies on CPU and GPU
     user_real_t         *Sw, *Sw_d;                                                     // Spectral density on CPU and GPU
     user_real_t         *tmpSw;                                                         // Temporary spectral density
+    user_real_t         *Rw;                                                            // inverse participation ratio weighted frequency distribution 
+    user_real_t         *Pw;                                                            // frequency distribution
+    user_real_t         ipr;                                                            // inverse partition ratio
+
+
 
     // variables for TCF
     user_complex_t      *F_d;                                                           // F matrix on GPU
@@ -222,6 +229,8 @@ int main(int argc, char *argv[])
     FILE *rtcf;
     FILE *itcf;
     FILE *spec_density;
+    FILE *freq_dist;
+    FILE *ipr_freq_dist;
     FILE *spec_lineshape; 
     FILE *vv_lineshape; 
     FILE *vv_rtcf;
@@ -333,14 +342,19 @@ int main(int argc, char *argv[])
         Cuerr = cudaMalloc( &ctmpmat_d, nchrom2      *sizeof(user_complex_t)); CHK_ERR;
         if ( ifintmeth == 0 ) Cuerr = cudaMalloc( &prop_d   , nchrom2      *sizeof(user_complex_t)); CHK_ERR;
     }
+    kappa   = (user_real_t *)    malloc( nchrom2 * sizeof(user_real_t)); if ( kappa == NULL ) MALLOC_ERR;
+
 
     // memory for spectral density calculation, if requested
     if ( SPECD_FLAG )
     {
         // CPU arrays
         omega   = (user_real_t *)    malloc( nomega       * sizeof(user_real_t)); if ( omega == NULL ) MALLOC_ERR;
-        Sw      = (user_real_t *)    calloc( nomega       , sizeof(user_real_t)); if ( Ftcf  == NULL ) MALLOC_ERR;
+        Sw      = (user_real_t *)    calloc( nomega       , sizeof(user_real_t)); if ( Sw    == NULL ) MALLOC_ERR;
         tmpSw   = (user_real_t *)    malloc( nomega       * sizeof(user_real_t)); if ( tmpSw == NULL ) MALLOC_ERR;
+        Pw      = (user_real_t *)    calloc( nomega       , sizeof(user_real_t)); if ( Pw    == NULL ) MALLOC_ERR;
+        Rw      = (user_real_t *)    calloc( nomega       , sizeof(user_real_t)); if ( Rw    == NULL ) MALLOC_ERR;
+
 
         // GPU arrays
         Cuerr = cudaMalloc( &MUX_d   , nchrom       *sizeof(user_real_t)); CHK_ERR;
@@ -576,6 +590,40 @@ int main(int argc, char *argv[])
             // ---------------------------------------------------- //
 
 
+
+            // ---------------------------------------------------- //
+            // ***              The Frequency Distb.            *** //
+
+            // I'll do everything on the CPU here since I want to do it quick. 
+            // copy eigenvectors back to host memory
+            cudaMemcpy( kappa, kappa_d, nchrom2*sizeof(user_real_t), cudaMemcpyDeviceToHost );
+
+            // loop over eigenstates belonging to the current thread and calculate ipr
+            for ( int eign = 0; eign < nchrom; eign ++ ){
+                user_real_t c;
+                int bin_num;
+                ipr = 0.; // initialize ipr
+                for ( int i = 0; i < nchrom; i ++ ){
+                    // calculate ipr
+                    c = kappa[eign*nchrom + i];
+                    ipr += c*c*c*c;
+                }
+                ipr = 1./ipr;
+
+                // determine frequency distribution
+                wi = w[eign] + avef; // frequency of current mode
+
+                // determine bin number
+                bin_num = (int) round((wi - omegaStart)/omegaStep);
+                if ( bin_num < 0 || bin_num >= nomega ){
+                    printf("WARNING: bin_num is: %d for frequency %g. Check bounds of omegaStart and omegaStop. Aborting.\n", bin_num, wi);
+                }
+                Pw[bin_num] += 1;
+                Rw[bin_num] += ipr;
+            }
+
+            // ***           Done the Frequency Distb.          *** //
+            // ---------------------------------------------------- //
 
 
             // ---------------------------------------------------- //
@@ -1110,6 +1158,10 @@ int main(int argc, char *argv[])
     // normalize spectral density by number of samples
     if ( SPECD_FLAG ) for ( int i = 0; i < nomega; i++) Sw[i]   = Sw[i] / (user_real_t) nsamples;
 
+    // normalize the frequency and ipr weighted frequency distributions
+    for ( int i = 0; i < nomega; i ++ ) Pw[i] /= nchrom*nsamples*ntcfpoints;
+    for ( int i = 0; i < nomega; i ++ ) Rw[i] /= nchrom*nsamples*ntcfpoints;
+    for ( int i = 0; i < nomega; i ++ ) Rw[i] /= Pw[i];
 
 
     // write time correlation function
@@ -1146,6 +1198,17 @@ int main(int argc, char *argv[])
         for ( int i = 0; i < nomega; i++) fprintf(spec_density, "%g %g\n", omega[i], Sw[i]);
         fclose(spec_density);
     }
+
+    // write the frequency distributions
+    freq_dist = fopen(strcat(strcpy(fname,outf),"_Pw.dat"), "w");
+    for ( int i = 0; i < nomega; i++) fprintf(freq_dist, "%g %g\n", omega[i], Pw[i]);
+    fclose(freq_dist);
+
+    ipr_freq_dist = fopen(strcat(strcpy(fname,outf),"_Rw.dat"), "w");
+    for ( int i = 0; i < nomega; i++) fprintf(ipr_freq_dist, "%g %g\n", omega[i], Rw[i]);
+    fclose(ipr_freq_dist);
+
+
 
     // Write the absorption lineshape
     // Since the C2R transform is inverse by default, the frequencies have to be negated
@@ -1190,6 +1253,9 @@ int main(int argc, char *argv[])
     free(tcfvv);
     free(tcfvh);
     free(pdtcf);
+    free(Rw);
+    free(Pw);
+    free(kappa);
 
     cudaFree(x_d);
     cudaFree(Ftcf_d);
@@ -1687,6 +1753,7 @@ void get_spectral_density( user_real_t *w, user_real_t *MUX, user_real_t *MUY, u
     }
 }
 
+
 /**********************************************************
    
         HELPER FUNCTIONS FOR GPU CALCULATIONS
@@ -1780,7 +1847,7 @@ void makeI ( user_complex_t *mat, int n )
 
 // parse input file to setup calculation
 void ir_init( char *argv[], char gmxf[], char cptf[], char outf[], char model[], int *ifintmeth, user_real_t *dt, int *ntcfpoints, 
-              int *nsamples, int *sampleEvery, user_real_t *t1, user_real_t *avef, int *omegaStart, int *omegaStop, 
+              int *nsamples, int *sampleEvery, user_real_t *t1, user_real_t *avef, user_real_t *omegaStart, user_real_t *omegaStop, 
               int *omegaStep, int *natom_mol, int *nchrom_mol, int *nzeros, user_real_t *beginTime, int *SPECD_FLAG,
               user_real_t *max_int_steps, char species[] )
 {
@@ -1831,14 +1898,6 @@ void ir_init( char *argv[], char gmxf[], char cptf[], char outf[], char model[],
         {
             sscanf( value, "%d", (int *) sampleEvery );
         }
-        else if ( strcmp(para,"omegaStart") == 0 )
-        {
-            sscanf( value, "%d", (int *) omegaStart );
-        }
-        else if ( strcmp(para,"omegaStop") == 0 )
-        {
-            sscanf( value, "%d", (int *) omegaStop );
-        }
         else if ( strcmp(para,"omegaStep") == 0 )
         {
             sscanf( value, "%d", (int *) omegaStep );
@@ -1884,6 +1943,14 @@ void ir_init( char *argv[], char gmxf[], char cptf[], char outf[], char model[],
         {
             sscanf( value, "%lf", max_int_steps);
         }
+        else if ( strcmp(para,"omegaStart") == 0 )
+        {
+            sscanf( value, "%lf", (user_real_t *) omegaStart );
+        }
+        else if ( strcmp(para,"omegaStop") == 0 )
+        {
+            sscanf( value, "%lf", (user_real_t *) omegaStop );
+        }
 #else
         else if ( strcmp(para,"dt") == 0 )
         {
@@ -1904,6 +1971,14 @@ void ir_init( char *argv[], char gmxf[], char cptf[], char outf[], char model[],
         else if ( strcmp(para,"max_int_steps") == 0 )
         {
             sscanf( value, "%f", max_int_steps);
+        }
+        else if ( strcmp(para,"omegaStart") == 0 )
+        {
+            sscanf( value, "%f", (user_real_t *) omegaStart );
+        }
+        else if ( strcmp(para,"omegaStop") == 0 )
+        {
+            sscanf( value, "%f", (user_real_t *) omegaStop );
         }
 #endif
         else
@@ -1932,7 +2007,7 @@ void printProgress( int currentStep, int totalSteps )
 
 // Checkpoint the simulation
 void checkpoint( char *argv[], char gmxf[], char cptf[], char outf[], char model[], int *ifintmeth, user_real_t *dt, int *ntcfpoints, 
-                 int *nsamples, int *sampleEvery, user_real_t *t1, user_real_t *avef, int *omegaStart, int *omegaStop, int *omegaStep,
+                 int *nsamples, int *sampleEvery, user_real_t *t1, user_real_t *avef, user_real_t *omegaStart, user_real_t *omegaStop, int *omegaStep,
                  int *natom_mol, int *nchrom_mol, int *nzeros, user_real_t *beginTime, int *SPECD_FLAG, user_real_t *max_int_steps, char species[], int nchrom, int nomega,
                  int *currentSample, int *currentFrame, user_complex_t *tcf, user_complex_t *tcfvv, user_complex_t *tcfvh, user_real_t *Sw, 
                  user_complex_t *F_d, user_complex_t *cmux0_d, user_complex_t *cmuy0_d, user_complex_t *cmuz0_d, user_complex_t *caxx0_d, 
@@ -1963,8 +2038,8 @@ void checkpoint( char *argv[], char gmxf[], char cptf[], char outf[], char model
         fwrite( ntcfpoints  , sizeof(int)           , 1, cptfp );         // number of tcf points
         fwrite( nsamples    , sizeof(int)           , 1, cptfp );         // number of samples
         fwrite( sampleEvery , sizeof(int)           , 1, cptfp );         // time between samples
-        fwrite( omegaStart  , sizeof(int)           , 1, cptfp );         // omegaStart for spectral density
-        fwrite( omegaStop   , sizeof(int)           , 1, cptfp );         // omegaStop  for spectral density
+        fwrite( omegaStart  , sizeof(user_real_t)   , 1, cptfp );         // omegaStart for spectral density
+        fwrite( omegaStop   , sizeof(user_real_t)   , 1, cptfp );         // omegaStop  for spectral density
         fwrite( omegaStep   , sizeof(int)           , 1, cptfp );         // omegaStep  for spectral density
         fwrite( natom_mol   , sizeof(int)           , 1, cptfp );         // atoms per molecule
         fwrite( nchrom_mol  , sizeof(int)           , 1, cptfp );         // chromophores per molecule
@@ -2050,8 +2125,8 @@ void checkpoint( char *argv[], char gmxf[], char cptf[], char outf[], char model
                 fread( ntcfpoints  , sizeof(int)           , 1, cptfp );         // number of tcf points
                 fread( nsamples    , sizeof(int)           , 1, cptfp );         // number of samples -- TODO: Doesn't need to be the same
                 fread( sampleEvery , sizeof(int)           , 1, cptfp );         // time between samples
-                fread( omegaStart  , sizeof(int)           , 1, cptfp );         // omegaStart for spectral density
-                fread( omegaStop   , sizeof(int)           , 1, cptfp );         // omegaStop  for spectral density
+                fread( omegaStart  , sizeof(user_real_t)   , 1, cptfp );         // omegaStart for spectral density
+                fread( omegaStop   , sizeof(user_real_t)   , 1, cptfp );         // omegaStop  for spectral density
                 fread( omegaStep   , sizeof(int)           , 1, cptfp );         // omegaStep  for spectral density
                 fread( natom_mol   , sizeof(int)           , 1, cptfp );         // atoms per molecule
                 fread( nchrom_mol  , sizeof(int)           , 1, cptfp );         // chromophores per molecule

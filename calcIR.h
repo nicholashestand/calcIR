@@ -12,7 +12,7 @@
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <string.h>
+#include <string.h> 
 #include <time.h>
 #include <xdrfile.h>
 #include <xdrfile_xtc.h>
@@ -82,7 +82,6 @@ __global__
 void get_spectral_density( user_real_t *w, user_real_t *MUX, user_real_t *MUY, user_real_t *MUZ, user_real_t *omega, user_real_t *Sw,
                            int nomega, int nchrom, user_real_t t1, user_real_t avef );
 
-
 __global__
 void cast_to_complex_GPU( user_real_t *s_d, user_complex_t *c_d, magma_int_t n );
 
@@ -108,7 +107,7 @@ user_real_t dot3( user_real_t x[3], user_real_t y[3] );
 
 
 void ir_init( char *argv[], char gmxf[], char cptf[], char outf[], char model[], int *ifintmeth, user_real_t *dt, int *ntcfpoints, 
-              int *nsamples, int *sampleEvery, user_real_t *t1, user_real_t *avef, int *omegaStart, int *omegaStop, 
+              int *nsamples, int *sampleEvery, user_real_t *t1, user_real_t *avef, user_real_t *omegaStart, user_real_t *omegaStop, 
               int *omegaStep, int *natom_mol, int *nchrom_mol, int *nzeros, user_real_t *beginTime, int *SPECD_FLAG,
               user_real_t *max_int_steps, char species[] );
 
@@ -117,7 +116,7 @@ void printProgress( int currentStep, int totalSteps );
 
 
 void checkpoint( char *argv[], char gmxf[], char cptf[], char outf[], char model[], int *ifintmeth, user_real_t *dt, int *ntcfpoints, 
-                 int *nsamples, int *sampleEvery, user_real_t *t1, user_real_t *avef, int *omegaStart, int *omegaStop, int *omegaStep,
+                 int *nsamples, int *sampleEvery, user_real_t *t1, user_real_t *avef, user_real_t *omegaStart, user_real_t *omegaStop, int *omegaStep,
                  int *natom_mol, int *nchrom_mol, int *nzeros, user_real_t *beginTime, int *SPECD_FLAG, user_real_t *max_int_steps, char species[], int nchrom, int nomega, 
                  int *currentSample, int *currentFrame, user_complex_t *tcf, user_complex_t *tcf_vv, user_complex_t *tcf_vh, user_real_t *Sw, 
                  user_complex_t *F_d, user_complex_t *cmux0_d, user_complex_t *cmuy0_d, user_complex_t *cmuz0_d, user_complex_t *caxx0_d, 
