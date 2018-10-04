@@ -618,8 +618,9 @@ int main(int argc, char *argv[])
                 if ( bin_num < 0 || bin_num >= nomega ){
                     printf("WARNING: bin_num is: %d for frequency %g. Check bounds of omegaStart and omegaStop. Aborting.\n", bin_num, wi);
                 }
-                Pw[bin_num] += 1;
-                Rw[bin_num] += ipr;
+                // divide by omegaStep to make probability density
+                Pw[bin_num] += 1/(omegaStep*1.);
+                Rw[bin_num] += ipr/(omegaStep*1.);
             }
 
             // ***           Done the Frequency Distb.          *** //
