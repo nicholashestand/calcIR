@@ -195,8 +195,10 @@ int main(int argc, char *argv[])
     user_real_t         *Sw, *Sw_d;                                                     // Spectral density on CPU and GPU
     user_real_t         *tmpSw;                                                         // Temporary spectral density
     user_real_t         *Rw;                                                            // inverse participation ratio weighted frequency distribution 
+    user_real_t         *Rmw;                                                            // inverse participation ratio weighted frequency distribution 
     user_real_t         *Pw;                                                            // frequency distribution
-    user_real_t         ipr;                                                            // inverse partition ratio
+    user_real_t         ipr;                                                            // inverse participation ratio
+    user_real_t         mipr;                                                           // molecular inverse participation ratio
 
 
 
@@ -231,6 +233,7 @@ int main(int argc, char *argv[])
     FILE *spec_density;
     FILE *freq_dist;
     FILE *ipr_freq_dist;
+    FILE *mipr_freq_dist;
     FILE *spec_lineshape; 
     FILE *vv_lineshape; 
     FILE *vv_rtcf;
@@ -354,6 +357,8 @@ int main(int argc, char *argv[])
         tmpSw   = (user_real_t *)    malloc( nomega       * sizeof(user_real_t)); if ( tmpSw == NULL ) MALLOC_ERR;
         Pw      = (user_real_t *)    calloc( nomega       , sizeof(user_real_t)); if ( Pw    == NULL ) MALLOC_ERR;
         Rw      = (user_real_t *)    calloc( nomega       , sizeof(user_real_t)); if ( Rw    == NULL ) MALLOC_ERR;
+        Rmw     = (user_real_t *)    calloc( nomega       , sizeof(user_real_t)); if ( Rmw    == NULL ) MALLOC_ERR;
+
 
 
         // GPU arrays
@@ -602,6 +607,8 @@ int main(int argc, char *argv[])
             for ( int eign = 0; eign < nchrom; eign ++ ){
                 user_real_t c;
                 int bin_num;
+
+                // determine ipr
                 ipr = 0.; // initialize ipr
                 for ( int i = 0; i < nchrom; i ++ ){
                     // calculate ipr
@@ -609,6 +616,21 @@ int main(int argc, char *argv[])
                     ipr += c*c*c*c;
                 }
                 ipr = 1./ipr;
+
+                // determine molecular ipr
+                user_real_t inner_sum, outer_sum;
+                int chrom;
+                outer_sum = 0.;
+                for ( int i = 0; i < nmol; i ++ ){
+                    inner_sum = 0.;  //initialize
+                    for ( int j = 0; j < nchrom_mol; j++ ){
+                        chrom = i*nchrom_mol + j;
+                        c = kappa[eign*nchrom + chrom];
+                        inner_sum += c*c;
+                    }
+                    outer_sum += inner_sum * inner_sum;
+                }
+                mipr = 1./outer_sum;
 
                 // determine frequency distribution
                 wi = w[eign] + avef; // frequency of current mode
@@ -618,9 +640,11 @@ int main(int argc, char *argv[])
                 if ( bin_num < 0 || bin_num >= nomega ){
                     printf("WARNING: bin_num is: %d for frequency %g. Check bounds of omegaStart and omegaStop. Aborting.\n", bin_num, wi);
                 }
+
                 // divide by omegaStep to make probability density
-                Pw[bin_num] += 1/(omegaStep*1.);
-                Rw[bin_num] += ipr/(omegaStep*1.);
+                Pw[ bin_num] += 1./(omegaStep*1.);
+                Rw[ bin_num] += ipr/(omegaStep*1.);
+                Rmw[bin_num] += mipr/(omegaStep*1.);
             }
 
             // ***           Done the Frequency Distb.          *** //
@@ -1160,9 +1184,12 @@ int main(int argc, char *argv[])
     if ( SPECD_FLAG ) for ( int i = 0; i < nomega; i++) Sw[i]   = Sw[i] / (user_real_t) nsamples;
 
     // normalize the frequency and ipr weighted frequency distributions
-    for ( int i = 0; i < nomega; i ++ ) Pw[i] /= nchrom*nsamples*ntcfpoints;
-    for ( int i = 0; i < nomega; i ++ ) Rw[i] /= nchrom*nsamples*ntcfpoints;
-    for ( int i = 0; i < nomega; i ++ ) Rw[i] /= Pw[i];
+    for ( int i = 0; i < nomega; i ++ ) Pw[i]  /= nchrom*nsamples*ntcfpoints;
+    for ( int i = 0; i < nomega; i ++ ) Rw[i]  /= nchrom*nsamples*ntcfpoints;
+    for ( int i = 0; i < nomega; i ++ ) Rw[i]  /= Pw[i];
+    for ( int i = 0; i < nomega; i ++ ) Rmw[i] /= nchrom*nsamples*ntcfpoints;
+    for ( int i = 0; i < nomega; i ++ ) Rmw[i] /= Pw[i];
+
 
 
     // write time correlation function
@@ -1208,6 +1235,10 @@ int main(int argc, char *argv[])
     ipr_freq_dist = fopen(strcat(strcpy(fname,outf),"_Rw.dat"), "w");
     for ( int i = 0; i < nomega; i++) fprintf(ipr_freq_dist, "%g %g\n", omega[i], Rw[i]);
     fclose(ipr_freq_dist);
+
+    mipr_freq_dist = fopen(strcat(strcpy(fname,outf),"_Rmw.dat"), "w");
+    for ( int i = 0; i < nomega; i++) fprintf(mipr_freq_dist, "%g %g\n", omega[i], Rmw[i]);
+    fclose(mipr_freq_dist);
 
 
 
@@ -1257,6 +1288,7 @@ int main(int argc, char *argv[])
     free(Rw);
     free(Pw);
     free(kappa);
+    free(Rmw);
 
     cudaFree(x_d);
     cudaFree(Ftcf_d);
