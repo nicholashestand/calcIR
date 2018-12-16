@@ -1,6 +1,5 @@
 src     = calcIR.cu
 exes    = calcIR.exe
-exed    = calcIR_d.exe
 NVCC    = nvcc
 INC     = -I$(CUDADIR)/include -I$(MKLROOT)/include -I$(MAGMADIR)/include
 FLAGS	= -Xcompiler "-fPIC -Wall -Wno-unused-function" -DMKL_ILP64 -Wno-deprecated-gpu-targets
