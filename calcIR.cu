@@ -13,6 +13,7 @@ volatile sig_atomic_t interrupted=false;
 
 // TODO: ALLOW SOME PARAMETERS TO CHANGE WHEN STARTING FROM CPT, if desired
 // TODO: TEST MRRR diagonalization routine to see if faster
+// TODO: Make ipr, mipr and frequency dists write and read to checkpoint file for restarts
 
 int main(int argc, char *argv[])
 {
@@ -1393,17 +1394,17 @@ void get_eproj_GPU( rvec *x, float boxx, float boxy, float boxz, int natoms, int
     
     int n, m, i, j, istart, istride;
     int chrom;
-    user_real_t mox[DIM];                     // oxygen position on molecule m
-    user_real_t mx[DIM];                      // atom position on molecule m
-    user_real_t nhx[DIM];                     // hydrogen position on molecule n of the current chromophore
-    user_real_t nox[DIM];                     // oxygen position on molecule n
-    user_real_t nohx[DIM];                    // the unit vector pointing along the OH bond for the current chromophore
-    user_real_t mom[DIM];                     // the OM vector on molecule m
-    user_real_t dr[DIM];                      // the min image vector between two atoms
+    user_real_t mox[XDR_DIM];                     // oxygen position on molecule m
+    user_real_t mx[XDR_DIM];                      // atom position on molecule m
+    user_real_t nhx[XDR_DIM];                     // hydrogen position on molecule n of the current chromophore
+    user_real_t nox[XDR_DIM];                     // oxygen position on molecule n
+    user_real_t nohx[XDR_DIM];                    // the unit vector pointing along the OH bond for the current chromophore
+    user_real_t mom[XDR_DIM];                     // the OM vector on molecule m
+    user_real_t dr[XDR_DIM];                      // the min image vector between two atoms
     user_real_t r;                            // the distance between two atoms 
     const float cutoff = 0.7831;         // the oh cutoff distance
     const float bohr_nm = 18.8973;       // convert from bohr to nanometer
-    user_real_t efield[DIM];                  // the electric field vector
+    user_real_t efield[XDR_DIM];                  // the electric field vector
 
     istart  =   blockIdx.x * blockDim.x + threadIdx.x;
     istride =   blockDim.x * gridDim.x;
@@ -1517,12 +1518,12 @@ void get_eproj_GPU( rvec *x, float boxx, float boxy, float boxz, int natoms, int
 
                 // Add the contribution of the current atom to the electric field
                 if ( i < 3  ){              // HW1 and HW2
-                    for ( j=0; j < DIM; j++){
+                    for ( j=0; j < XDR_DIM; j++){
                         efield[j] += 0.52 * dr[j] / (r*r*r);
                     }
                 }
                 else if ( i == 3 ){         // MW (note the negative sign)
-                    for ( j=0; j < DIM; j++){
+                    for ( j=0; j < XDR_DIM; j++){
                         efield[j] -= 1.04 * dr[j] / (r*r*r);
                     }
                 }
@@ -1550,17 +1551,17 @@ void get_kappa_GPU( rvec *x, float boxx, float boxy, float boxz, int natoms, int
     
     int n, m, istart, istride;
     int chromn, chromm;
-    user_real_t mox[DIM];                         // oxygen position on molecule m
-    user_real_t mhx[DIM];                         // atom position on molecule m
-    user_real_t nhx[DIM];                         // hydrogen position on molecule n of the current chromophore
-    user_real_t nox[DIM];                         // oxygen position on molecule n
-    user_real_t noh[DIM];
-    user_real_t moh[DIM];
-    user_real_t nmu[DIM];
-    user_real_t mmu[DIM];
+    user_real_t mox[XDR_DIM];                         // oxygen position on molecule m
+    user_real_t mhx[XDR_DIM];                         // atom position on molecule m
+    user_real_t nhx[XDR_DIM];                         // hydrogen position on molecule n of the current chromophore
+    user_real_t nox[XDR_DIM];                         // oxygen position on molecule n
+    user_real_t noh[XDR_DIM];
+    user_real_t moh[XDR_DIM];
+    user_real_t nmu[XDR_DIM];
+    user_real_t mmu[XDR_DIM];
     user_real_t mmuprime;
     user_real_t nmuprime;
-    user_real_t dr[DIM];                          // the min image vector between two atoms
+    user_real_t dr[XDR_DIM];                          // the min image vector between two atoms
     user_real_t r;                                // the distance between two atoms 
     const user_real_t bohr_nm    = 18.8973;       // convert from bohr to nanometer
     const user_real_t cm_hartree = 2.1947463E5;   // convert from cm-1 to hartree
