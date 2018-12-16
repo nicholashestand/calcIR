@@ -58,7 +58,6 @@ int main(int argc, char *argv[])
     int           imodel        = 0;                                      // integer for water model
     int           ispecies      = 0;                                      // integer for species of interest
     int           SPECD_FLAG    = 1;                                      // calculate the spectral density
-    int           ifintmeth     = 0;                                      // integration method, 0 exact, 1 adams-bashforth
     int           ntcfpoints    = 150 ;                                   // the number of tcf points for each spectrum
     int           nsamples      = 1   ;                                   // number of samples to average for the total spectrum
     int           sampleEvery   = 10  ;                                   // sample a new configuration every sampleEvery ps. Note the way the program is written, 
@@ -83,14 +82,14 @@ int main(int argc, char *argv[])
     if ( strstr(argv[1], ".cpt") == NULL )
     {
         // START FROM INPUT FILE
-        ir_init( argv, gmxf, cptf, outf, model, &ifintmeth, &dt, &ntcfpoints, &nsamples, &sampleEvery, &t1, 
+        ir_init( argv, gmxf, cptf, outf, model, &dt, &ntcfpoints, &nsamples, &sampleEvery, &t1, 
                 &avef, &omegaStart, &omegaStop, &omegaStep, &natom_mol, &nchrom_mol, &nzeros, &beginTime,
                 &SPECD_FLAG, &max_int_steps, species );
     }
     else
     {
         // START FROM CHECKPOINT FILE
-        checkpoint( argv, gmxf, cptf, outf, model, &ifintmeth, &dt, &ntcfpoints, &nsamples, &sampleEvery, &t1, 
+        checkpoint( argv, gmxf, cptf, outf, model, &dt, &ntcfpoints, &nsamples, &sampleEvery, &t1, 
                     &avef, &omegaStart, &omegaStop, &omegaStep, &natom_mol, &nchrom_mol, &nzeros, &beginTime,
                     &SPECD_FLAG, &max_int_steps, species, 0, 0, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, 
                     NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, CP_INIT );
@@ -103,7 +102,6 @@ int main(int argc, char *argv[])
     printf("\tSetting default file name to %s\n",           outf        );
     printf("\tSetting cpt file %s\n",                       cptf        );
     printf("\tSetting model to %s\n",                       model       );
-    printf("\tSetting F integration method to %d\n",        ifintmeth   );
     printf("\tSetting the number of tcf points to %d\n",    ntcfpoints  );
     printf("\tSetting nsamples to %d\n",                    nsamples    ); 
     printf("\tSetting sampleEvery to %d (ps)\n",            sampleEvery );
@@ -168,12 +166,6 @@ int main(int argc, char *argv[])
     user_real_t         *eproj_d;                                                       // the electric field projected along the oh bonds
     user_real_t         *kappa_d;                                                       // the hamiltonian on the GPU
     user_real_t         *kappa;
-
-
-    // GPU variables for Adams integration
-    user_complex_t      *k1_d, *k2_d, *k3_d, *k4_d;                                     // Adams integration variables
-    int                 order_counter = 0 ;                                             // To keep track of the current order of the Adams method
-
 
     // magma variables for ssyevd
     user_real_t         aux_work[1];                                                    // To get optimal size of lwork
@@ -344,7 +336,7 @@ int main(int argc, char *argv[])
         Cuerr = cudaMalloc( &kappa_d  , nchrom2      *sizeof(user_real_t)); CHK_ERR;
         Cuerr = cudaMalloc( &ckappa_d , nchrom2      *sizeof(user_complex_t)); CHK_ERR;
         Cuerr = cudaMalloc( &ctmpmat_d, nchrom2      *sizeof(user_complex_t)); CHK_ERR;
-        if ( ifintmeth == 0 ) Cuerr = cudaMalloc( &prop_d   , nchrom2      *sizeof(user_complex_t)); CHK_ERR;
+        Cuerr = cudaMalloc( &prop_d   , nchrom2      *sizeof(user_complex_t)); CHK_ERR;
     }
     kappa   = (user_real_t *)    malloc( nchrom2 * sizeof(user_real_t)); if ( kappa == NULL ) MALLOC_ERR;
 
@@ -374,16 +366,6 @@ int main(int argc, char *argv[])
         for (int i = 0; i < nomega; i++) omega[i] = (user_real_t) (omegaStart + omegaStep*i); 
     }
  
-
-    // memory for integration of F if adams integration is used
-    if ( ifintmeth == 1 ) // adams integration
-    {
-        Cuerr = cudaMalloc( &k1_d    , nchrom2      *sizeof(user_complex_t)); CHK_ERR;
-        Cuerr = cudaMalloc( &k2_d    , nchrom2      *sizeof(user_complex_t)); CHK_ERR;
-        Cuerr = cudaMalloc( &k3_d    , nchrom2      *sizeof(user_complex_t)); CHK_ERR;
-        Cuerr = cudaMalloc( &k4_d    , nchrom2      *sizeof(user_complex_t)); CHK_ERR;
-    }
-
     // ***            END MEMORY ALLOCATION             *** //
     // **************************************************** //
     
@@ -394,7 +376,7 @@ int main(int argc, char *argv[])
     if ( strstr(argv[1], ".cpt") != NULL )
     {
         // read in checkpoint file
-        checkpoint( argv, gmxf, cptf, outf, model, &ifintmeth, &dt, &ntcfpoints, &nsamples, &sampleEvery, &t1, 
+        checkpoint( argv, gmxf, cptf, outf, model, &dt, &ntcfpoints, &nsamples, &sampleEvery, &t1, 
                     &avef, &omegaStart, &omegaStop, &omegaStep, &natom_mol, &nchrom_mol, &nzeros, &beginTime,
                     &SPECD_FLAG, &max_int_steps, species, nchrom, nomega, &currentSample, &currentFrame, tcf, tcfvv, tcfvh,
                     Sw, F_d, cmux0_d, cmuy0_d, cmuz0_d, caxx0_d, cayy0_d, cazz0_d, caxy0_d, cayz0_d, cazx0_d, CP_READ );
@@ -456,7 +438,7 @@ int main(int argc, char *argv[])
             // If the program has recieved an interrupt or termination signal, write the current state and exit
             if ( interrupted )
             {
-                checkpoint( argv, gmxf, cptf, outf, model, &ifintmeth, &dt, &ntcfpoints, &nsamples, &sampleEvery, &t1, 
+                checkpoint( argv, gmxf, cptf, outf, model, &dt, &ntcfpoints, &nsamples, &sampleEvery, &t1, 
                             &avef, &omegaStart, &omegaStop, &omegaStep, &natom_mol, &nchrom_mol, &nzeros, &beginTime,
                             &SPECD_FLAG, &max_int_steps, species, nchrom, nomega, &currentSample, &currentFrame, tcf, tcfvv, tcfvh,
                             Sw, F_d, cmux0_d, cmuy0_d, cmuz0_d, caxx0_d, cayy0_d, cazz0_d, caxy0_d, cayz0_d, cazx0_d, CP_WRITE );
@@ -498,55 +480,51 @@ int main(int argc, char *argv[])
             // ***          Diagonalize the Hamiltonian         *** //
 
             // Note that kappa only needs to be diagonalized if the exact integration method is requested or the spectral density
-            if ( ifintmeth == 0 || SPECD_FLAG )
+            // if the first time, query for optimal workspace dimensions
+            if ( SSYEVD_ALLOC_FLAG )
             {
-
-                // if the first time, query for optimal workspace dimensions
-                if ( SSYEVD_ALLOC_FLAG )
-                {
 #ifdef USE_DOUBLES
-                    magma_dsyevd_gpu( MagmaVec, MagmaUpper, (magma_int_t) nchrom, NULL, (magma_int_t) nchrom, 
-                                      NULL, NULL, (magma_int_t) nchrom, aux_work, -1, aux_iwork, -1, &info );
+            magma_dsyevd_gpu( MagmaVec, MagmaUpper, (magma_int_t) nchrom, NULL, (magma_int_t) nchrom, 
+                              NULL, NULL, (magma_int_t) nchrom, aux_work, -1, aux_iwork, -1, &info );
 #else
-                    magma_ssyevd_gpu( MagmaVec, MagmaUpper, (magma_int_t) nchrom, NULL, (magma_int_t) nchrom, 
-                                      NULL, NULL, (magma_int_t) nchrom, aux_work, -1, aux_iwork, -1, &info );
+            magma_ssyevd_gpu( MagmaVec, MagmaUpper, (magma_int_t) nchrom, NULL, (magma_int_t) nchrom, 
+                              NULL, NULL, (magma_int_t) nchrom, aux_work, -1, aux_iwork, -1, &info );
 #endif
-                    lwork   = (magma_int_t) aux_work[0];
-                    liwork  = aux_iwork[0];
+            lwork   = (magma_int_t) aux_work[0];
+            liwork  = aux_iwork[0];
 
-                    // allocate work arrays, eigenvalues and other stuff
-                    w       = (user_real_t *)    malloc( nchrom       * sizeof(user_real_t)); if ( w == NULL ) MALLOC_ERR;
+            // allocate work arrays, eigenvalues and other stuff
+            w       = (user_real_t *)    malloc( nchrom       * sizeof(user_real_t)); if ( w == NULL ) MALLOC_ERR;
 
-                    Merr = magma_imalloc_cpu   ( &iwork, liwork ); CHK_MERR; 
+            Merr = magma_imalloc_cpu   ( &iwork, liwork ); CHK_MERR; 
 #ifdef USE_DOUBLES
-                    Merr = magma_dmalloc_pinned( &wA , nchrom2 ) ; CHK_MERR;
-                    Merr = magma_dmalloc_pinned( &work , lwork  ); CHK_MERR;
+            Merr = magma_dmalloc_pinned( &wA , nchrom2 ) ; CHK_MERR;
+            Merr = magma_dmalloc_pinned( &work , lwork  ); CHK_MERR;
 #else
-                    Merr = magma_smalloc_pinned( &wA , nchrom2 ) ; CHK_MERR;
-                    Merr = magma_smalloc_pinned( &work , lwork  ); CHK_MERR;
+            Merr = magma_smalloc_pinned( &wA , nchrom2 ) ; CHK_MERR;
+            Merr = magma_smalloc_pinned( &work , lwork  ); CHK_MERR;
 #endif
-                    SSYEVD_ALLOC_FLAG = 0;      // is allocated here, so we won't need to do it again
+            SSYEVD_ALLOC_FLAG = 0;      // is allocated here, so we won't need to do it again
 
-                    // get info about space needed for diagonalization
-                    cudaMemGetInfo( &freem, &total );
-                    printf("\n>>> cudaMemGetInfo returned\n"
-                           "\tfree:  %g gb\n"
-                           "\ttotal: %g gb\n", (float) freem/(1E9), (float) total/(1E9));
-                    printf(">>> %g gb needed by diagonalization routine.\n", (float) (lwork * (float) sizeof(user_real_t)/(1E9)));
-                }
-
-#ifdef USE_DOUBLES
-                magma_dsyevd_gpu( MagmaVec, MagmaUpper, (magma_int_t) nchrom, kappa_d, (magma_int_t) nchrom,
-                                  w, wA, (magma_int_t) nchrom, work, lwork, iwork, liwork, &info );
-#else
-                magma_ssyevd_gpu( MagmaVec, MagmaUpper, (magma_int_t) nchrom, kappa_d, (magma_int_t) nchrom,
-                                  w, wA, (magma_int_t) nchrom, work, lwork, iwork, liwork, &info );
-#endif
-                if ( info != 0 ){ printf("ERROR: magma_dsyevd_gpu returned info %lld.\n", info ); exit(EXIT_FAILURE);}
-
-                // copy eigenvalues to device memory
-                cudaMemcpy( w_d    , w    , nchrom*sizeof(user_real_t), cudaMemcpyHostToDevice );
+            // get info about space needed for diagonalization
+            cudaMemGetInfo( &freem, &total );
+            printf("\n>>> cudaMemGetInfo returned\n"
+                   "\tfree:  %g gb\n"
+                   "\ttotal: %g gb\n", (float) freem/(1E9), (float) total/(1E9));
+            printf(">>> %g gb needed by diagonalization routine.\n", (float) (lwork * (float) sizeof(user_real_t)/(1E9)));
             }
+
+#ifdef USE_DOUBLES
+            magma_dsyevd_gpu( MagmaVec, MagmaUpper, (magma_int_t) nchrom, kappa_d, (magma_int_t) nchrom,
+                              w, wA, (magma_int_t) nchrom, work, lwork, iwork, liwork, &info );
+#else
+            magma_ssyevd_gpu( MagmaVec, MagmaUpper, (magma_int_t) nchrom, kappa_d, (magma_int_t) nchrom,
+                              w, wA, (magma_int_t) nchrom, work, lwork, iwork, liwork, &info );
+#endif
+            if ( info != 0 ){ printf("ERROR: magma_dsyevd_gpu returned info %lld.\n", info ); exit(EXIT_FAILURE);}
+
+            // copy eigenvalues to device memory
+            cudaMemcpy( w_d    , w    , nchrom*sizeof(user_real_t), cudaMemcpyHostToDevice );
 
             // ***          Done with the Diagonalization       *** //
             // ---------------------------------------------------- //
@@ -678,7 +656,7 @@ int main(int argc, char *argv[])
             {
                 cudaFree( kappa_d );
                 Cuerr = cudaMalloc( &ctmpmat_d, nchrom2      *sizeof(user_complex_t)); CHK_ERR;
-                if ( ifintmeth == 0 ) Cuerr = cudaMalloc( &prop_d   , nchrom2      *sizeof(user_complex_t)); CHK_ERR;
+                Cuerr = cudaMalloc( &prop_d   , nchrom2      *sizeof(user_complex_t)); CHK_ERR;
             }
 
 
@@ -707,153 +685,46 @@ int main(int argc, char *argv[])
             }
             else
             {
-                if ( ifintmeth == 0 )   // Integrate with exact diagonalization
-                {
-                    // build the propigator
-                    Pinit <<<numBlocks,blockSize>>> ( prop_d, w_d, nchrom, dt );
+                // Integrate with exact diagonalization
+                // build the propigator
+                Pinit <<<numBlocks,blockSize>>> ( prop_d, w_d, nchrom, dt );
 #ifdef USE_DOUBLES
-                    // ctmpmat_d = ckappa_d * prop_d
-                    magma_zgemm( MagmaNoTrans, MagmaNoTrans, (magma_int_t) nchrom, (magma_int_t) nchrom, 
-                                 (magma_int_t) nchrom, MAGMA_ONE, ckappa_d, (magma_int_t) nchrom, prop_d, 
-                                 (magma_int_t) nchrom, MAGMA_ZERO, ctmpmat_d, (magma_int_t) nchrom, queue );
+                // ctmpmat_d = ckappa_d * prop_d
+                magma_zgemm( MagmaNoTrans, MagmaNoTrans, (magma_int_t) nchrom, (magma_int_t) nchrom, 
+                             (magma_int_t) nchrom, MAGMA_ONE, ckappa_d, (magma_int_t) nchrom, prop_d, 
+                             (magma_int_t) nchrom, MAGMA_ZERO, ctmpmat_d, (magma_int_t) nchrom, queue );
 
-                    // prop_d = ctmpmat_d * ckappa_d **T 
-                    magma_zgemm( MagmaNoTrans, MagmaTrans, (magma_int_t) nchrom, (magma_int_t) nchrom, 
-                                 (magma_int_t) nchrom, MAGMA_ONE, ctmpmat_d, (magma_int_t) nchrom, ckappa_d, 
-                                 (magma_int_t) nchrom, MAGMA_ZERO, prop_d, (magma_int_t) nchrom, queue );
+                // prop_d = ctmpmat_d * ckappa_d **T 
+                magma_zgemm( MagmaNoTrans, MagmaTrans, (magma_int_t) nchrom, (magma_int_t) nchrom, 
+                             (magma_int_t) nchrom, MAGMA_ONE, ctmpmat_d, (magma_int_t) nchrom, ckappa_d, 
+                             (magma_int_t) nchrom, MAGMA_ZERO, prop_d, (magma_int_t) nchrom, queue );
 
-                    // ctmpmat_d = prop_d * F
-                    magma_zgemm( MagmaNoTrans, MagmaNoTrans, (magma_int_t) nchrom, (magma_int_t) nchrom, 
-                                 (magma_int_t) nchrom, MAGMA_ONE, prop_d, (magma_int_t) nchrom, F_d, 
-                                 (magma_int_t) nchrom, MAGMA_ZERO, ctmpmat_d, (magma_int_t) nchrom, queue );
+                // ctmpmat_d = prop_d * F
+                magma_zgemm( MagmaNoTrans, MagmaNoTrans, (magma_int_t) nchrom, (magma_int_t) nchrom, 
+                             (magma_int_t) nchrom, MAGMA_ONE, prop_d, (magma_int_t) nchrom, F_d, 
+                             (magma_int_t) nchrom, MAGMA_ZERO, ctmpmat_d, (magma_int_t) nchrom, queue );
 
-                    // copy the F matrix back from the temporary variable to F_d
-                    magma_zcopy( (magma_int_t) nchrom2, ctmpmat_d , 1, F_d, 1, queue );
+                // copy the F matrix back from the temporary variable to F_d
+                magma_zcopy( (magma_int_t) nchrom2, ctmpmat_d , 1, F_d, 1, queue );
 #else
-                    // ctmpmat_d = ckappa_d * prop_d
-                    magma_cgemm( MagmaNoTrans, MagmaNoTrans, (magma_int_t) nchrom, (magma_int_t) nchrom, 
-                                 (magma_int_t) nchrom, MAGMA_ONE, ckappa_d, (magma_int_t) nchrom, prop_d, 
-                                 (magma_int_t) nchrom, MAGMA_ZERO, ctmpmat_d, (magma_int_t) nchrom, queue );
+                // ctmpmat_d = ckappa_d * prop_d
+                magma_cgemm( MagmaNoTrans, MagmaNoTrans, (magma_int_t) nchrom, (magma_int_t) nchrom, 
+                             (magma_int_t) nchrom, MAGMA_ONE, ckappa_d, (magma_int_t) nchrom, prop_d, 
+                             (magma_int_t) nchrom, MAGMA_ZERO, ctmpmat_d, (magma_int_t) nchrom, queue );
 
-                    // prop_d = ctmpmat_d * ckappa_d **T 
-                    magma_cgemm( MagmaNoTrans, MagmaTrans, (magma_int_t) nchrom, (magma_int_t) nchrom, 
-                                 (magma_int_t) nchrom, MAGMA_ONE, ctmpmat_d, (magma_int_t) nchrom, ckappa_d, 
-                                 (magma_int_t) nchrom, MAGMA_ZERO, prop_d, (magma_int_t) nchrom, queue );
+                // prop_d = ctmpmat_d * ckappa_d **T 
+                magma_cgemm( MagmaNoTrans, MagmaTrans, (magma_int_t) nchrom, (magma_int_t) nchrom, 
+                             (magma_int_t) nchrom, MAGMA_ONE, ctmpmat_d, (magma_int_t) nchrom, ckappa_d, 
+                             (magma_int_t) nchrom, MAGMA_ZERO, prop_d, (magma_int_t) nchrom, queue );
 
-                    // ctmpmat_d = prop_d * F
-                    magma_cgemm( MagmaNoTrans, MagmaNoTrans, (magma_int_t) nchrom, (magma_int_t) nchrom, 
-                                 (magma_int_t) nchrom, MAGMA_ONE, prop_d, (magma_int_t) nchrom, F_d, 
-                                 (magma_int_t) nchrom, MAGMA_ZERO, ctmpmat_d, (magma_int_t) nchrom, queue );
+                // ctmpmat_d = prop_d * F
+                magma_cgemm( MagmaNoTrans, MagmaNoTrans, (magma_int_t) nchrom, (magma_int_t) nchrom, 
+                             (magma_int_t) nchrom, MAGMA_ONE, prop_d, (magma_int_t) nchrom, F_d, 
+                             (magma_int_t) nchrom, MAGMA_ZERO, ctmpmat_d, (magma_int_t) nchrom, queue );
 
-                    // copy the F matrix back from the temporary variable to F_d
-                    magma_ccopy( (magma_int_t) nchrom2, ctmpmat_d , 1, F_d, 1, queue );
+                // copy the F matrix back from the temporary variable to F_d
+                magma_ccopy( (magma_int_t) nchrom2, ctmpmat_d , 1, F_d, 1, queue );
 #endif
-                }
-                else if ( ifintmeth == 1 ) // Integrate F with 4th order Adams-Bashfort
-                {                          // Note: The kappa matrix is assumed to be time independent over this integration cycle of max_int_steps
-                    // reset current order if at the begining of a sample
-                    if ( currentFrame == 1 ) order_counter = 1;
-
-                    for ( int i=0; i<(int) max_int_steps; i++ )// take multiple steps
-                    {
-#ifdef USE_DOUBLES
-                        // find current dF/dt = iF(t+i)k(t)
-                        magma_zgemm( MagmaNoTrans, MagmaNoTrans, (magma_int_t) nchrom, (magma_int_t) nchrom, 
-                                    (magma_int_t) nchrom, MAGMA_MAKE(0.0,1.0), F_d, nchrom, ckappa_d, nchrom,
-                                     MAGMA_ZERO, ctmpmat_d, nchrom, queue );
-
-                        // For the first step use Euler since previous values are not available
-                        if ( order_counter == 1 )
-                        {
-                            // save current value for later
-                            magma_zcopy( (magma_int_t) nchrom2, ctmpmat_d , 1, k1_d, 1, queue );
-                            magma_zaxpy( (magma_int_t) nchrom2, MAGMA_MAKE(dt/HBAR/max_int_steps,0), k1_d, 1, F_d, 1, queue );
-                            order_counter = 2;
-                        }
-                        // use ADAMS bensforth two-step method for step 2
-                        else if ( order_counter == 2 )
-                        {
-                            // save current values for later
-                            magma_zcopy( (magma_int_t) nchrom2, ctmpmat_d , 1, k2_d, 1, queue );
-                            magma_zaxpy( (magma_int_t) nchrom2, MAGMA_MAKE( 3.0/2.0*dt/HBAR/max_int_steps,0), k2_d, 1, F_d, 1, queue );
-                            magma_zaxpy( (magma_int_t) nchrom2, MAGMA_MAKE(-1.0/2.0*dt/HBAR/max_int_steps,0), k1_d, 1, F_d, 1, queue );
-                            order_counter = 3;
-                        }
-                        // use ADAMS bensforth three-step method
-                        else if ( order_counter == 3 )
-                        {
-                            // save current values for later
-                            magma_zcopy( (magma_int_t) nchrom2, ctmpmat_d , 1, k3_d, 1, queue );
-                            magma_zaxpy( (magma_int_t) nchrom2, MAGMA_MAKE(23.0/12.0*dt/HBAR/max_int_steps,0), k3_d, 1, F_d, 1, queue );
-                            magma_zaxpy( (magma_int_t) nchrom2, MAGMA_MAKE(-4.0/3.0 *dt/HBAR/max_int_steps,0), k2_d, 1, F_d, 1, queue );
-                            magma_zaxpy( (magma_int_t) nchrom2, MAGMA_MAKE( 5.0/12.0*dt/HBAR/max_int_steps,0), k1_d, 1, F_d, 1, queue );
-                            order_counter = 4;
-                        }
-                        // use ADAMS bensforth four-step method
-                        else
-                        {
-                            // save current values for later
-                            magma_zcopy( (magma_int_t) nchrom2, ctmpmat_d , 1, k4_d, 1, queue );
-                            magma_zaxpy( (magma_int_t) nchrom2, MAGMA_MAKE( 55.0/24.0 *dt/HBAR/max_int_steps,0), k4_d, 1, F_d, 1, queue );
-                            magma_zaxpy( (magma_int_t) nchrom2, MAGMA_MAKE(-59.0/24.0 *dt/HBAR/max_int_steps,0), k3_d, 1, F_d, 1, queue );
-                            magma_zaxpy( (magma_int_t) nchrom2, MAGMA_MAKE( 37.0/24.0 *dt/HBAR/max_int_steps,0), k2_d, 1, F_d, 1, queue );
-                            magma_zaxpy( (magma_int_t) nchrom2, MAGMA_MAKE(-3.0/8.0   *dt/HBAR/max_int_steps,0), k1_d, 1, F_d, 1, queue );
-                            // shuffle definitions for next iteration //
-                            magma_zcopy( (magma_int_t) nchrom2, k2_d, 1, k1_d, 1, queue );
-                            magma_zcopy( (magma_int_t) nchrom2, k3_d, 1, k2_d, 1, queue );
-                            magma_zcopy( (magma_int_t) nchrom2, k4_d, 1, k3_d, 1, queue );
-                        }
-
-#else
-                        // find current dF/dt = iF(t+i)k(t)
-                        magma_cgemm( MagmaNoTrans, MagmaNoTrans, (magma_int_t) nchrom, (magma_int_t) nchrom, 
-                                    (magma_int_t) nchrom, MAGMA_MAKE(0.0,1.0), F_d, nchrom, ckappa_d, nchrom,
-                                     MAGMA_ZERO, ctmpmat_d, nchrom, queue );
-
-                        // For the first step use Euler since previous values are not available
-                        if ( order_counter == 1 )
-                        {
-                            // save current value for later
-                            magma_ccopy( (magma_int_t) nchrom2, ctmpmat_d , 1, k1_d, 1, queue );
-                            magma_caxpy( (magma_int_t) nchrom2, MAGMA_MAKE(dt/HBAR/max_int_steps,0), k1_d, 1, F_d, 1, queue );
-                            order_counter = 2;
-                        }
-                        // use ADAMS bensforth two-step method for step 2
-                        else if ( order_counter == 2 )
-                        {
-                            // save current values for later
-                            magma_ccopy( (magma_int_t) nchrom2, ctmpmat_d , 1, k2_d, 1, queue );
-                            magma_caxpy( (magma_int_t) nchrom2, MAGMA_MAKE( 3.0/2.0*dt/HBAR/max_int_steps,0), k2_d, 1, F_d, 1, queue );
-                            magma_caxpy( (magma_int_t) nchrom2, MAGMA_MAKE(-1.0/2.0*dt/HBAR/max_int_steps,0), k1_d, 1, F_d, 1, queue );
-                            order_counter = 3;
-                        }
-                        // use ADAMS bensforth three-step method
-                        else if ( order_counter == 3 )
-                        {
-                            // save current values for later
-                            magma_ccopy( (magma_int_t) nchrom2, ctmpmat_d , 1, k3_d, 1, queue );
-                            magma_caxpy( (magma_int_t) nchrom2, MAGMA_MAKE(23.0/12.0*dt/HBAR/max_int_steps,0), k3_d, 1, F_d, 1, queue );
-                            magma_caxpy( (magma_int_t) nchrom2, MAGMA_MAKE(-4.0/3.0 *dt/HBAR/max_int_steps,0), k2_d, 1, F_d, 1, queue );
-                            magma_caxpy( (magma_int_t) nchrom2, MAGMA_MAKE( 5.0/12.0*dt/HBAR/max_int_steps,0), k1_d, 1, F_d, 1, queue );
-                            order_counter = 4;
-                        }
-                        // use ADAMS bensforth four-step method
-                        else
-                        {
-                            // save current values for later
-                            magma_ccopy( (magma_int_t) nchrom2, ctmpmat_d , 1, k4_d, 1, queue );
-                            magma_caxpy( (magma_int_t) nchrom2, MAGMA_MAKE( 55.0/24.0 *dt/HBAR/max_int_steps,0), k4_d, 1, F_d, 1, queue );
-                            magma_caxpy( (magma_int_t) nchrom2, MAGMA_MAKE(-59.0/24.0 *dt/HBAR/max_int_steps,0), k3_d, 1, F_d, 1, queue );
-                            magma_caxpy( (magma_int_t) nchrom2, MAGMA_MAKE( 37.0/24.0 *dt/HBAR/max_int_steps,0), k2_d, 1, F_d, 1, queue );
-                            magma_caxpy( (magma_int_t) nchrom2, MAGMA_MAKE(-3.0/8.0   *dt/HBAR/max_int_steps,0), k1_d, 1, F_d, 1, queue );
-                            // shuffle definitions for next iteration //
-                            magma_ccopy( (magma_int_t) nchrom2, k2_d, 1, k1_d, 1, queue );
-                            magma_ccopy( (magma_int_t) nchrom2, k3_d, 1, k2_d, 1, queue );
-                            magma_ccopy( (magma_int_t) nchrom2, k4_d, 1, k3_d, 1, queue );
-                        }
-#endif
-                    }
-                }
             }
             // ***           Done updating the F matrix         *** //
 
@@ -862,7 +733,7 @@ int main(int argc, char *argv[])
             {
                 cudaFree( ckappa_d );
                 cudaFree( ctmpmat_d );
-                if ( ifintmeth == 0 ) cudaFree( prop_d );
+                cudaFree( prop_d );
             }
 
             // calculate mFm for x y and z components
@@ -1093,7 +964,7 @@ int main(int argc, char *argv[])
         currentFrame  = 0;
 
         // checkpoint after every sample
-        checkpoint( argv, gmxf, cptf, outf, model, &ifintmeth, &dt, &ntcfpoints, &nsamples, &sampleEvery, &t1, 
+        checkpoint( argv, gmxf, cptf, outf, model, &dt, &ntcfpoints, &nsamples, &sampleEvery, &t1, 
                     &avef, &omegaStart, &omegaStop, &omegaStep, &natom_mol, &nchrom_mol, &nzeros, &beginTime,
                     &SPECD_FLAG, &max_int_steps, species, nchrom, nomega, &currentSample, &currentFrame, tcf, tcfvv, tcfvh,
                     Sw, F_d, cmux0_d, cmuy0_d, cmuz0_d, caxx0_d, cayy0_d, cazz0_d, caxy0_d, cayz0_d, cazx0_d, CP_WRITE );
@@ -1329,7 +1200,7 @@ int main(int argc, char *argv[])
         cudaFree(kappa_d);
         cudaFree(ckappa_d);
         cudaFree(ctmpmat_d);
-        if ( ifintmeth == 0 ) cudaFree(prop_d);
+        cudaFree(prop_d);
     }
 
     magma_free(pdtcf_d);
@@ -1361,17 +1232,6 @@ int main(int argc, char *argv[])
         cudaFree(w_d);
     }
  
-    // free memory for integration of F depending on which method is used
-    else if ( ifintmeth == 1 ) // only used for adams integration method
-    {
-        cudaFree(k1_d);
-        cudaFree(k2_d);
-        cudaFree(k3_d);
-        cudaFree(k4_d);
-    }
-
-
-
     // final call to finalize magma math library
     magma_finalize();
 
@@ -1880,7 +1740,7 @@ void makeI ( user_complex_t *mat, int n )
 
 
 // parse input file to setup calculation
-void ir_init( char *argv[], char gmxf[], char cptf[], char outf[], char model[], int *ifintmeth, user_real_t *dt, int *ntcfpoints, 
+void ir_init( char *argv[], char gmxf[], char cptf[], char outf[], char model[], user_real_t *dt, int *ntcfpoints, 
               int *nsamples, int *sampleEvery, user_real_t *t1, user_real_t *avef, user_real_t *omegaStart, user_real_t *omegaStop, 
               int *omegaStep, int *natom_mol, int *nchrom_mol, int *nzeros, user_real_t *beginTime, int *SPECD_FLAG,
               user_real_t *max_int_steps, char species[] )
@@ -1914,11 +1774,6 @@ void ir_init( char *argv[], char gmxf[], char cptf[], char outf[], char model[],
         else if ( strcmp(para,"model") == 0 )
         {
             sscanf( value, "%s", model );
-        }
-        else if ( strcmp(para,"fintmeth") == 0 )
-        {
-            sscanf( value, "%d", (int *) ifintmeth );
-            if ( *ifintmeth < 0 || *ifintmeth > 1 ) *ifintmeth = 0;
         }
         else if ( strcmp(para,"ntcfpoints") == 0 )
         {
@@ -2040,7 +1895,7 @@ void printProgress( int currentStep, int totalSteps )
 
 
 // Checkpoint the simulation
-void checkpoint( char *argv[], char gmxf[], char cptf[], char outf[], char model[], int *ifintmeth, user_real_t *dt, int *ntcfpoints, 
+void checkpoint( char *argv[], char gmxf[], char cptf[], char outf[], char model[], user_real_t *dt, int *ntcfpoints, 
                  int *nsamples, int *sampleEvery, user_real_t *t1, user_real_t *avef, user_real_t *omegaStart, user_real_t *omegaStop, int *omegaStep,
                  int *natom_mol, int *nchrom_mol, int *nzeros, user_real_t *beginTime, int *SPECD_FLAG, user_real_t *max_int_steps, char species[], int nchrom, int nomega,
                  int *currentSample, int *currentFrame, user_complex_t *tcf, user_complex_t *tcfvv, user_complex_t *tcfvh, user_real_t *Sw, 
@@ -2068,7 +1923,6 @@ void checkpoint( char *argv[], char gmxf[], char cptf[], char outf[], char model
         fwrite( cptf        , MAX_STR_LEN           , 1, cptfp );         // checkpoint file
         fwrite( outf        , MAX_STR_LEN           , 1, cptfp );         // output file names
         fwrite( model       , MAX_STR_LEN           , 1, cptfp );         // model
-        fwrite( ifintmeth   , sizeof(int)           , 1, cptfp );         // integration method
         fwrite( ntcfpoints  , sizeof(int)           , 1, cptfp );         // number of tcf points
         fwrite( nsamples    , sizeof(int)           , 1, cptfp );         // number of samples
         fwrite( sampleEvery , sizeof(int)           , 1, cptfp );         // time between samples
@@ -2155,7 +2009,6 @@ void checkpoint( char *argv[], char gmxf[], char cptf[], char outf[], char model
                 fread( cptf        , MAX_STR_LEN           , 1, cptfp );         // checkpoint file
                 fread( outf        , MAX_STR_LEN           , 1, cptfp );         // output file names
                 fread( model       , MAX_STR_LEN           , 1, cptfp );         // model
-                fread( ifintmeth   , sizeof(int)           , 1, cptfp );         // integration method
                 fread( ntcfpoints  , sizeof(int)           , 1, cptfp );         // number of tcf points
                 fread( nsamples    , sizeof(int)           , 1, cptfp );         // number of samples -- TODO: Doesn't need to be the same
                 fread( sampleEvery , sizeof(int)           , 1, cptfp );         // time between samples

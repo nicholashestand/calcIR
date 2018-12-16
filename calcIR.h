@@ -106,7 +106,7 @@ __host__ __device__
 user_real_t dot3( user_real_t x[3], user_real_t y[3] );
 
 
-void ir_init( char *argv[], char gmxf[], char cptf[], char outf[], char model[], int *ifintmeth, user_real_t *dt, int *ntcfpoints, 
+void ir_init( char *argv[], char gmxf[], char cptf[], char outf[], char model[], user_real_t *dt, int *ntcfpoints, 
               int *nsamples, int *sampleEvery, user_real_t *t1, user_real_t *avef, user_real_t *omegaStart, user_real_t *omegaStop, 
               int *omegaStep, int *natom_mol, int *nchrom_mol, int *nzeros, user_real_t *beginTime, int *SPECD_FLAG,
               user_real_t *max_int_steps, char species[] );
@@ -115,7 +115,7 @@ void ir_init( char *argv[], char gmxf[], char cptf[], char outf[], char model[],
 void printProgress( int currentStep, int totalSteps );
 
 
-void checkpoint( char *argv[], char gmxf[], char cptf[], char outf[], char model[], int *ifintmeth, user_real_t *dt, int *ntcfpoints, 
+void checkpoint( char *argv[], char gmxf[], char cptf[], char outf[], char model[], user_real_t *dt, int *ntcfpoints, 
                  int *nsamples, int *sampleEvery, user_real_t *t1, user_real_t *avef, user_real_t *omegaStart, user_real_t *omegaStop, int *omegaStep,
                  int *natom_mol, int *nchrom_mol, int *nzeros, user_real_t *beginTime, int *SPECD_FLAG, user_real_t *max_int_steps, char species[], int nchrom, int nomega, 
                  int *currentSample, int *currentFrame, user_complex_t *tcf, user_complex_t *tcf_vv, user_complex_t *tcf_vh, user_real_t *Sw, 
