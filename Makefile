@@ -9,14 +9,10 @@ LIBDIRS = -L/opt/intel/mkl/lib/intel64 -L/usr/local/cuda-8.0/lib64 -L/usr/local/
 INCDIRS = -I/opt/intel/mkl/include -I/usr/local/cuda-8.0/include -I/usr/local/magma/include
 
 
-all: ${exes} ${exed}
+all: ${exes}
 
 ${exes}: ${src}
 	$(NVCC) $(src) -o $(exes) $(FLAGS) $(LIBDIRS) $(LIBS) $(INCDIRS)
 
-${exed}: ${src}
-	$(NVCC) $(src) -o $(exed) $(FLAGS) $(LIBDIRS) $(LIBS) $(INCDIRS) -DUSE_DOUBLES=1
-
 clean:
 	rm calcIR.exe
-	rm calcIR_d.exe

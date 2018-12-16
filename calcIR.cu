@@ -111,15 +111,6 @@ int main(int argc, char *argv[])
     printf("\tSetting nzeros to %d\n",                      nzeros      );
     printf("\tSetting SPECD_FLAG to %d\n",                  SPECD_FLAG  );
     printf("\tSetting species to %s\n",                     species     );
-#ifdef USE_DOUBLES
-    printf("\tSetting omegaStart to %lf\n",                  omegaStart  );
-    printf("\tSetting omegaStop to %lf\n",                   omegaStop   );
-    printf("\tSetting dt to %lf\n",                         dt          );
-    printf("\tSetting t1 to %lf (ps)\n",                    t1          );
-    printf("\tSetting avef to %lf\n",                       avef        );
-    printf("\tSetting equilibration time to %lf (ps)\n",    beginTime   );
-    printf("\tSetting max_int_steps to %lf\n",              max_int_steps );
-#else
     printf("\tSetting omegaStart to %f\n",                  omegaStart  );
     printf("\tSetting omegaStop to %f\n",                   omegaStop   );
     printf("\tSetting dt to %f\n",                          dt          );
@@ -127,9 +118,6 @@ int main(int argc, char *argv[])
     printf("\tSetting avef to %f\n",                        avef        );
     printf("\tSetting equilibration time to %f (ps)\n",     beginTime   );
     printf("\tSetting max_int_steps to %f\n",               max_int_steps );
-#endif
-
-
 
     // Useful variables and condstants
     int                 natoms, nmol, nchrom;                                           // number of atoms, molecules, chromophores
@@ -483,13 +471,8 @@ int main(int argc, char *argv[])
             // if the first time, query for optimal workspace dimensions
             if ( SSYEVD_ALLOC_FLAG )
             {
-#ifdef USE_DOUBLES
-            magma_dsyevd_gpu( MagmaVec, MagmaUpper, (magma_int_t) nchrom, NULL, (magma_int_t) nchrom, 
-                              NULL, NULL, (magma_int_t) nchrom, aux_work, -1, aux_iwork, -1, &info );
-#else
             magma_ssyevd_gpu( MagmaVec, MagmaUpper, (magma_int_t) nchrom, NULL, (magma_int_t) nchrom, 
                               NULL, NULL, (magma_int_t) nchrom, aux_work, -1, aux_iwork, -1, &info );
-#endif
             lwork   = (magma_int_t) aux_work[0];
             liwork  = aux_iwork[0];
 
@@ -497,13 +480,8 @@ int main(int argc, char *argv[])
             w       = (user_real_t *)    malloc( nchrom       * sizeof(user_real_t)); if ( w == NULL ) MALLOC_ERR;
 
             Merr = magma_imalloc_cpu   ( &iwork, liwork ); CHK_MERR; 
-#ifdef USE_DOUBLES
-            Merr = magma_dmalloc_pinned( &wA , nchrom2 ) ; CHK_MERR;
-            Merr = magma_dmalloc_pinned( &work , lwork  ); CHK_MERR;
-#else
             Merr = magma_smalloc_pinned( &wA , nchrom2 ) ; CHK_MERR;
             Merr = magma_smalloc_pinned( &work , lwork  ); CHK_MERR;
-#endif
             SSYEVD_ALLOC_FLAG = 0;      // is allocated here, so we won't need to do it again
 
             // get info about space needed for diagonalization
@@ -514,13 +492,8 @@ int main(int argc, char *argv[])
             printf(">>> %g gb needed by diagonalization routine.\n", (float) (lwork * (float) sizeof(user_real_t)/(1E9)));
             }
 
-#ifdef USE_DOUBLES
-            magma_dsyevd_gpu( MagmaVec, MagmaUpper, (magma_int_t) nchrom, kappa_d, (magma_int_t) nchrom,
-                              w, wA, (magma_int_t) nchrom, work, lwork, iwork, liwork, &info );
-#else
             magma_ssyevd_gpu( MagmaVec, MagmaUpper, (magma_int_t) nchrom, kappa_d, (magma_int_t) nchrom,
                               w, wA, (magma_int_t) nchrom, work, lwork, iwork, liwork, &info );
-#endif
             if ( info != 0 ){ printf("ERROR: magma_dsyevd_gpu returned info %lld.\n", info ); exit(EXIT_FAILURE);}
 
             // copy eigenvalues to device memory
@@ -539,21 +512,12 @@ int main(int argc, char *argv[])
 
                 // project the transition dipole moments onto the eigenbasis
                 // MU_d = kappa_d**T x mu_d 
-#ifdef USE_DOUBLES
-                magma_dgemv( MagmaTrans, (magma_int_t) nchrom, (magma_int_t) nchrom, 
-                             1.0, kappa_d, (magma_int_t) nchrom , mux_d, 1, 0.0, MUX_d, 1, queue);
-                magma_dgemv( MagmaTrans, (magma_int_t) nchrom, (magma_int_t) nchrom, 
-                             1.0, kappa_d, (magma_int_t) nchrom, muy_d, 1, 0.0, MUY_d, 1, queue);
-                magma_dgemv( MagmaTrans, (magma_int_t) nchrom, (magma_int_t) nchrom, 
-                             1.0, kappa_d, (magma_int_t) nchrom, muz_d, 1, 0.0, MUZ_d, 1, queue);
-#else
                 magma_sgemv( MagmaTrans, (magma_int_t) nchrom, (magma_int_t) nchrom, 
                              1.0, kappa_d, (magma_int_t) nchrom , mux_d, 1, 0.0, MUX_d, 1, queue);
                 magma_sgemv( MagmaTrans, (magma_int_t) nchrom, (magma_int_t) nchrom, 
                              1.0, kappa_d, (magma_int_t) nchrom, muy_d, 1, 0.0, MUY_d, 1, queue);
                 magma_sgemv( MagmaTrans, (magma_int_t) nchrom, (magma_int_t) nchrom, 
                              1.0, kappa_d, (magma_int_t) nchrom, muz_d, 1, 0.0, MUZ_d, 1, queue);
-#endif
 
                 // Initializee the temporary array for spectral density
                 for (int i = 0; i < nomega; i++) tmpSw[i] = 0.0;
@@ -688,25 +652,6 @@ int main(int argc, char *argv[])
                 // Integrate with exact diagonalization
                 // build the propigator
                 Pinit <<<numBlocks,blockSize>>> ( prop_d, w_d, nchrom, dt );
-#ifdef USE_DOUBLES
-                // ctmpmat_d = ckappa_d * prop_d
-                magma_zgemm( MagmaNoTrans, MagmaNoTrans, (magma_int_t) nchrom, (magma_int_t) nchrom, 
-                             (magma_int_t) nchrom, MAGMA_ONE, ckappa_d, (magma_int_t) nchrom, prop_d, 
-                             (magma_int_t) nchrom, MAGMA_ZERO, ctmpmat_d, (magma_int_t) nchrom, queue );
-
-                // prop_d = ctmpmat_d * ckappa_d **T 
-                magma_zgemm( MagmaNoTrans, MagmaTrans, (magma_int_t) nchrom, (magma_int_t) nchrom, 
-                             (magma_int_t) nchrom, MAGMA_ONE, ctmpmat_d, (magma_int_t) nchrom, ckappa_d, 
-                             (magma_int_t) nchrom, MAGMA_ZERO, prop_d, (magma_int_t) nchrom, queue );
-
-                // ctmpmat_d = prop_d * F
-                magma_zgemm( MagmaNoTrans, MagmaNoTrans, (magma_int_t) nchrom, (magma_int_t) nchrom, 
-                             (magma_int_t) nchrom, MAGMA_ONE, prop_d, (magma_int_t) nchrom, F_d, 
-                             (magma_int_t) nchrom, MAGMA_ZERO, ctmpmat_d, (magma_int_t) nchrom, queue );
-
-                // copy the F matrix back from the temporary variable to F_d
-                magma_zcopy( (magma_int_t) nchrom2, ctmpmat_d , 1, F_d, 1, queue );
-#else
                 // ctmpmat_d = ckappa_d * prop_d
                 magma_cgemm( MagmaNoTrans, MagmaNoTrans, (magma_int_t) nchrom, (magma_int_t) nchrom, 
                              (magma_int_t) nchrom, MAGMA_ONE, ckappa_d, (magma_int_t) nchrom, prop_d, 
@@ -724,7 +669,6 @@ int main(int argc, char *argv[])
 
                 // copy the F matrix back from the temporary variable to F_d
                 magma_ccopy( (magma_int_t) nchrom2, ctmpmat_d , 1, F_d, 1, queue );
-#endif
             }
             // ***           Done updating the F matrix         *** //
 
@@ -738,22 +682,6 @@ int main(int argc, char *argv[])
 
             // calculate mFm for x y and z components
             // tcfx = cmux0_d**T * F_d *cmux_d
-#ifdef USE_DOUBLES
-            // x
-            magma_zgemv( MagmaNoTrans, (magma_int_t) nchrom, (magma_int_t) nchrom, MAGMA_ONE, F_d, (magma_int_t) nchrom,
-                         cmux0_d, 1, MAGMA_ZERO, tmpmu_d, 1, queue);
-            tcfx = magma_zdotu( (magma_int_t) nchrom, cmux_d, 1, tmpmu_d, 1, queue );
-
-            // y
-            magma_zgemv( MagmaNoTrans, (magma_int_t) nchrom, (magma_int_t) nchrom, MAGMA_ONE, F_d, (magma_int_t) nchrom,
-                         cmuy0_d, 1, MAGMA_ZERO, tmpmu_d, 1, queue);
-            tcfy = magma_zdotu( (magma_int_t) nchrom, cmuy_d, 1, tmpmu_d, 1, queue );
-
-            // z
-            magma_zgemv( MagmaNoTrans, (magma_int_t) nchrom, (magma_int_t) nchrom, MAGMA_ONE, F_d, (magma_int_t) nchrom,
-                         cmuz0_d, 1, MAGMA_ZERO, tmpmu_d, 1, queue);
-            tcfz = magma_zdotu( (magma_int_t) nchrom, cmuz_d, 1, tmpmu_d, 1, queue );
-#else
             // x
             magma_cgemv( MagmaNoTrans, (magma_int_t) nchrom, (magma_int_t) nchrom, MAGMA_ONE, F_d, (magma_int_t) nchrom,
                          cmux0_d, 1, MAGMA_ZERO, tmpmu_d, 1, queue);
@@ -768,7 +696,6 @@ int main(int argc, char *argv[])
             magma_cgemv( MagmaNoTrans, (magma_int_t) nchrom, (magma_int_t) nchrom, MAGMA_ONE, F_d, (magma_int_t) nchrom,
                          cmuz0_d, 1, MAGMA_ZERO, tmpmu_d, 1, queue);
             tcfz = magma_cdotu( (magma_int_t) nchrom, cmuz_d, 1, tmpmu_d, 1, queue );
-#endif
 
             // accumulate the tcf over the samples for the IR spectrum
             tcftmp                = MAGMA_ADD( tcfx  , tcfy );
@@ -784,80 +711,6 @@ int main(int argc, char *argv[])
             //              Now The Raman Spectrum             //
             //-------------------------------------------------//
             // tcfxx = caxx0_d**T * F_d * caxx_d
-#ifdef USE_DOUBLES
-
-            // **
-            // iiFii
-            // **
-
-            // xxFxx
-            magma_zgemv( MagmaNoTrans, (magma_int_t) nchrom, (magma_int_t) nchrom, MAGMA_ONE, F_d, (magma_int_t) nchrom,
-                         caxx0_d, 1, MAGMA_ZERO, tmpmu_d, 1, queue);
-            tcf_iiFii = magma_zdotu( (magma_int_t) nchrom, caxx_d, 1, tmpmu_d, 1, queue );
-
-            // yyFyy
-            magma_zgemv( MagmaNoTrans, (magma_int_t) nchrom, (magma_int_t) nchrom, MAGMA_ONE, F_d, (magma_int_t) nchrom,
-                         cayy0_d, 1, MAGMA_ZERO, tmpmu_d, 1, queue);
-            tcf_iiFii = MAGMA_ADD( magma_zdotu( (magma_int_t) nchrom, cayy_d, 1, tmpmu_d, 1, queue ), tcf_iiFii );
-
-            // zzFzz
-            magma_zgemv( MagmaNoTrans, (magma_int_t) nchrom, (magma_int_t) nchrom, MAGMA_ONE, F_d, (magma_int_t) nchrom,
-                         cazz0_d, 1, MAGMA_ZERO, tmpmu_d, 1, queue);
-            tcf_iiFii = MAGMA_ADD( magma_zdotu( (magma_int_t) nchrom, cazz_d, 1, tmpmu_d, 1, queue ), tcf_iiFii );
-
-            // **
-            // ijFij
-            // **
-
-            // xyFxy
-            magma_zgemv( MagmaNoTrans, (magma_int_t) nchrom, (magma_int_t) nchrom, MAGMA_ONE, F_d, (magma_int_t) nchrom,
-                         caxy0_d, 1, MAGMA_ZERO, tmpmu_d, 1, queue);
-            tcf_ijFij = magma_zdotu( (magma_int_t) nchrom, caxy_d, 1, tmpmu_d, 1, queue );
-
-            // yzFyz
-            magma_zgemv( MagmaNoTrans, (magma_int_t) nchrom, (magma_int_t) nchrom, MAGMA_ONE, F_d, (magma_int_t) nchrom,
-                         cayz0_d, 1, MAGMA_ZERO, tmpmu_d, 1, queue);
-            tcf_ijFij = MAGMA_ADD( magma_zdotu( (magma_int_t) nchrom, cayz_d, 1, tmpmu_d, 1, queue ), tcf_ijFij );
-
-            // zxFzx
-            magma_zgemv( MagmaNoTrans, (magma_int_t) nchrom, (magma_int_t) nchrom, MAGMA_ONE, F_d, (magma_int_t) nchrom,
-                         cazx0_d, 1, MAGMA_ZERO, tmpmu_d, 1, queue);
-            tcf_ijFij = MAGMA_ADD( magma_zdotu( (magma_int_t) nchrom, cazx_d, 1, tmpmu_d, 1, queue ), tcf_ijFij );
-
-            // **
-            // iiFjj
-            // **
-
-            // xxFyy
-            magma_zgemv( MagmaNoTrans, (magma_int_t) nchrom, (magma_int_t) nchrom, MAGMA_ONE, F_d, (magma_int_t) nchrom,
-                         caxx0_d, 1, MAGMA_ZERO, tmpmu_d, 1, queue);
-            tcf_iiFjj = magma_zdotu( (magma_int_t) nchrom, cayy_d, 1, tmpmu_d, 1, queue );
-
-            // xxFzz
-            magma_zgemv( MagmaNoTrans, (magma_int_t) nchrom, (magma_int_t) nchrom, MAGMA_ONE, F_d, (magma_int_t) nchrom,
-                         caxx0_d, 1, MAGMA_ZERO, tmpmu_d, 1, queue);
-            tcf_iiFjj = MAGMA_ADD( magma_zdotu( (magma_int_t) nchrom, cazz_d, 1, tmpmu_d, 1, queue ), tcf_iiFjj );
-
-            // yyFxx
-            magma_zgemv( MagmaNoTrans, (magma_int_t) nchrom, (magma_int_t) nchrom, MAGMA_ONE, F_d, (magma_int_t) nchrom,
-                         cayy0_d, 1, MAGMA_ZERO, tmpmu_d, 1, queue);
-            tcf_iiFjj = MAGMA_ADD( magma_zdotu( (magma_int_t) nchrom, caxx_d, 1, tmpmu_d, 1, queue ), tcf_iiFjj);
-
-            // yyFzz
-            magma_zgemv( MagmaNoTrans, (magma_int_t) nchrom, (magma_int_t) nchrom, MAGMA_ONE, F_d, (magma_int_t) nchrom,
-                         cayy0_d, 1, MAGMA_ZERO, tmpmu_d, 1, queue);
-            tcf_iiFjj = MAGMA_ADD( magma_zdotu( (magma_int_t) nchrom, cazz_d, 1, tmpmu_d, 1, queue ), tcf_iiFjj);
-
-            // zzFxx
-            magma_zgemv( MagmaNoTrans, (magma_int_t) nchrom, (magma_int_t) nchrom, MAGMA_ONE, F_d, (magma_int_t) nchrom,
-                         cazz0_d, 1, MAGMA_ZERO, tmpmu_d, 1, queue);
-            tcf_iiFjj = MAGMA_ADD( magma_zdotu( (magma_int_t) nchrom, caxx_d, 1, tmpmu_d, 1, queue ), tcf_iiFjj);
-
-            // zzFyy
-            magma_zgemv( MagmaNoTrans, (magma_int_t) nchrom, (magma_int_t) nchrom, MAGMA_ONE, F_d, (magma_int_t) nchrom,
-                         cazz0_d, 1, MAGMA_ZERO, tmpmu_d, 1, queue);
-            tcf_iiFjj = MAGMA_ADD( magma_zdotu( (magma_int_t) nchrom, cayy_d, 1, tmpmu_d, 1, queue ), tcf_iiFjj);
-#else
             // **
             // iiFii
             // **
@@ -933,7 +786,6 @@ int main(int argc, char *argv[])
             magma_cgemv( MagmaNoTrans, (magma_int_t) nchrom, (magma_int_t) nchrom, MAGMA_ONE, F_d, (magma_int_t) nchrom,
                          cazz0_d, 1, MAGMA_ZERO, tmpmu_d, 1, queue);
             tcf_iiFjj = MAGMA_ADD( magma_cdotu( (magma_int_t) nchrom, cayy_d, 1, tmpmu_d, 1, queue ), tcf_iiFjj);
-#endif
 
             // accumulate the tcf over the samples for the VV raman spectrum
             tcftmp                = MAGMA_ADD( MAGMA_MUL(MAGMA_MAKE(3.,0.), tcf_iiFii), tcf_iiFjj );
@@ -998,13 +850,8 @@ int main(int argc, char *argv[])
     cudaMalloc( &pdtcf_d  , (ntcfpoints+nzeros)*sizeof(user_complex_t));
     cudaMemcpy( pdtcf_d, pdtcf, (ntcfpoints+nzeros)*sizeof(user_complex_t), cudaMemcpyHostToDevice );
 
-#ifdef USE_DOUBLES
-    cufftPlan1d  ( &plan, ntcfpoints+nzeros, CUFFT_Z2D, 1);
-    cufftExecZ2D ( plan, pdtcf_d, Ftcf_d );
-#else
     cufftPlan1d  ( &plan, ntcfpoints+nzeros, CUFFT_C2R, 1);
     cufftExecC2R ( plan, pdtcf_d, Ftcf_d );
-#endif
     cudaMemcpy   ( Ftcf, Ftcf_d, ntcfpointsR*sizeof(user_real_t), cudaMemcpyDeviceToHost );
 
 
@@ -1021,11 +868,7 @@ int main(int argc, char *argv[])
     for ( int i = 0; i < nzeros; i++ ) pdtcf[i+ntcfpoints] = MAGMA_ZERO;
     cudaMemcpy( pdtcf_d, pdtcf, (ntcfpoints+nzeros)*sizeof(user_complex_t), cudaMemcpyHostToDevice );
 
-#ifdef USE_DOUBLES
-    cufftExecZ2D ( plan, pdtcf_d, Ftcf_d );
-#else
     cufftExecC2R ( plan, pdtcf_d, Ftcf_d );
-#endif
     cudaMemcpy   ( Ftcfvv, Ftcf_d, ntcfpointsR*sizeof(user_real_t), cudaMemcpyDeviceToHost );
 
 
@@ -1042,11 +885,7 @@ int main(int argc, char *argv[])
     for ( int i = 0; i < nzeros; i++ ) pdtcf[i+ntcfpoints] = MAGMA_ZERO;
     cudaMemcpy( pdtcf_d, pdtcf, (ntcfpoints+nzeros)*sizeof(user_complex_t), cudaMemcpyHostToDevice );
 
-#ifdef USE_DOUBLES
-    cufftExecZ2D ( plan, pdtcf_d, Ftcf_d );
-#else
     cufftExecC2R ( plan, pdtcf_d, Ftcf_d );
-#endif
     cudaMemcpy   ( Ftcfvh, Ftcf_d, ntcfpointsR*sizeof(user_real_t), cudaMemcpyDeviceToHost );
     cufftDestroy(plan);
 
@@ -1811,36 +1650,6 @@ void ir_init( char *argv[], char gmxf[], char cptf[], char outf[], char model[],
         {
             sscanf( value, "%s", species );
         }
-#ifdef USE_DOUBLES
-        else if ( strcmp(para,"dt") == 0 )
-        {
-            sscanf( value, "%lf", dt );
-        }
-        else if ( strcmp(para,"t1") == 0 )
-        {
-            sscanf( value, "%lf", t1 );
-        }
-        else if ( strcmp(para,"avef") == 0 )
-        {
-            sscanf( value, "%lf", avef );
-        }
-        else if ( strcmp(para,"beginTime") == 0 )
-        {
-            sscanf( value, "%lf", beginTime );
-        }
-        else if ( strcmp(para,"max_int_steps") == 0 )
-        {
-            sscanf( value, "%lf", max_int_steps);
-        }
-        else if ( strcmp(para,"omegaStart") == 0 )
-        {
-            sscanf( value, "%lf", (user_real_t *) omegaStart );
-        }
-        else if ( strcmp(para,"omegaStop") == 0 )
-        {
-            sscanf( value, "%lf", (user_real_t *) omegaStop );
-        }
-#else
         else if ( strcmp(para,"dt") == 0 )
         {
             sscanf( value, "%f", dt );
@@ -1869,7 +1678,6 @@ void ir_init( char *argv[], char gmxf[], char cptf[], char outf[], char model[],
         {
             sscanf( value, "%f", (user_real_t *) omegaStop );
         }
-#endif
         else
         {
             printf("WARNING: Parameter %s in input file %s not recognized, ignoring.\n", para, argv[1]);

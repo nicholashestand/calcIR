@@ -19,22 +19,6 @@
 
 // TYPES AND MAGMA REDEFINES
 
-#ifdef USE_DOUBLES
-
-typedef double user_real_t;
-typedef magmaDoubleComplex user_complex_t;
-
-#define MAGMA_ONE  MAGMA_Z_ONE
-#define MAGMA_ZERO MAGMA_Z_ZERO
-#define MAGMA_MAKE MAGMA_Z_MAKE
-#define MAGMA_ADD  MAGMA_Z_ADD
-#define MAGMA_MUL  MAGMA_Z_MUL
-#define MAGMA_DIV  MAGMA_Z_DIV
-#define MAGMA_REAL MAGMA_Z_REAL
-#define MAGMA_IMAG MAGMA_Z_IMAG
-
-#else
-
 typedef float user_real_t;
 typedef magmaFloatComplex user_complex_t;
 
@@ -46,8 +30,6 @@ typedef magmaFloatComplex user_complex_t;
 #define MAGMA_DIV  MAGMA_C_DIV
 #define MAGMA_REAL MAGMA_C_REAL
 #define MAGMA_IMAG MAGMA_C_IMAG
-
-#endif
 
 // CONSTANTS
 
