@@ -90,7 +90,7 @@ user_real_t dot3( user_real_t x[3], user_real_t y[3] );
 void ir_init( char *argv[], char gmxf[], char cptf[], char outf[], char model[], user_real_t *dt, int *ntcfpoints, 
               int *nsamples, int *sampleEvery, user_real_t *t1, user_real_t *avef, user_real_t *omegaStart, user_real_t *omegaStop, 
               int *omegaStep, int *natom_mol, int *nchrom_mol, int *nzeros, user_real_t *beginTime, 
-              user_real_t *max_int_steps, char species[] );
+              char species[] );
 
 
 void printProgress( int currentStep, int totalSteps );

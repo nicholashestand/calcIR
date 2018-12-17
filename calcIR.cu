@@ -58,7 +58,6 @@ int main(int argc, char *argv[])
     user_real_t   t1            = 0.260;                                  // relaxation time ( in ps )
     user_real_t   avef          = 3415.2;                                 // the approximate average stretch frequency to get rid of high
                                                                           // frequency oscillations in the time correlation function
-    user_real_t   max_int_steps = 4.0;                                    // number of Adams integration steps between each dt
     char          species[MAX_STR_LEN]; strncpy( species, " ", MAX_STR_LEN ); // species HOD/H2O HOD/D2O H2O D2O
 
  
@@ -66,7 +65,7 @@ int main(int argc, char *argv[])
     // START FROM INPUT FILE
     ir_init( argv, gmxf, cptf, outf, model, &dt, &ntcfpoints, &nsamples, &sampleEvery, &t1, 
             &avef, &omegaStart, &omegaStop, &omegaStep, &natom_mol, &nchrom_mol, &nzeros, &beginTime,
-            &max_int_steps, species );
+            species );
 
 
     // Print the parameters to stdout
@@ -88,7 +87,6 @@ int main(int argc, char *argv[])
     printf("\tSetting t1 to %f (ps)\n",                     t1          );
     printf("\tSetting avef to %f\n",                        avef        );
     printf("\tSetting equilibration time to %f (ps)\n",     beginTime   );
-    printf("\tSetting max_int_steps to %f\n",               max_int_steps );
 
     // Useful variables and condstants
     int                 natoms, nmol, nchrom;                                           // number of atoms, molecules, chromophores
@@ -1507,7 +1505,7 @@ void makeI ( user_complex_t *mat, int n )
 void ir_init( char *argv[], char gmxf[], char cptf[], char outf[], char model[], user_real_t *dt, int *ntcfpoints, 
               int *nsamples, int *sampleEvery, user_real_t *t1, user_real_t *avef, user_real_t *omegaStart, user_real_t *omegaStop, 
               int *omegaStep, int *natom_mol, int *nchrom_mol, int *nzeros, user_real_t *beginTime,
-              user_real_t *max_int_steps, char species[] )
+              char species[] )
 {
     char                para[MAX_STR_LEN];
     char                value[MAX_STR_LEN];
@@ -1586,10 +1584,6 @@ void ir_init( char *argv[], char gmxf[], char cptf[], char outf[], char model[],
         else if ( strcmp(para,"beginTime") == 0 )
         {
             sscanf( value, "%f", beginTime );
-        }
-        else if ( strcmp(para,"max_int_steps") == 0 )
-        {
-            sscanf( value, "%f", max_int_steps);
         }
         else if ( strcmp(para,"omegaStart") == 0 )
         {
