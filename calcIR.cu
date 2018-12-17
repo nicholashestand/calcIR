@@ -42,7 +42,7 @@ int main(int argc, char *argv[])
     int           ispecies      = 0;                                      // integer for species of interest
     int           ntcfpoints    = 150 ;                                   // the number of tcf points for each spectrum
     int           nsamples      = 1   ;                                   // number of samples to average for the total spectrum
-    int           sampleEvery   = 10  ;                                   // sample a new configuration every sampleEvery ps. Note the way the program is written, 
+    float         sampleEvery   = 10. ;                                   // sample a new configuration every sampleEvery ps. Note the way the program is written, 
                                                                           // ntcfpoints*dt must be less than sampleEvery.
     user_real_t   omegaStart    = 2000;                                   // starting frequency for spectral density
     user_real_t   omegaStop     = 5000;                                   // ending frequency for spectral density
@@ -72,7 +72,7 @@ int main(int argc, char *argv[])
     printf("\tSetting model to %s\n",                       model       );
     printf("\tSetting the number of tcf points to %d\n",    ntcfpoints  );
     printf("\tSetting nsamples to %d\n",                    nsamples    ); 
-    printf("\tSetting sampleEvery to %d (ps)\n",            sampleEvery );
+    printf("\tSetting sampleEvery to %f (ps)\n",            sampleEvery );
     printf("\tSetting omegaStep to %d\n",                   omegaStep   );
     printf("\tSetting natom_mol to %d\n",                   natom_mol   );
     printf("\tSetting nchrom_mol to %d\n",                  nchrom_mol  );
@@ -93,7 +93,6 @@ int main(int argc, char *argv[])
     const int           ntcfpointsR     = ( nzeros + ntcfpoints - 1 ) * 2;              // number of points for the real fourier transform
     const int           nomega          = ( omegaStop - omegaStart ) / omegaStep + 1;   // number of frequencies for the spectral density
     magma_int_t         nchrom2;                                                        // nchrom squared
-    const float         tprec = 1E-4;                                                   // precision for gmx time
     float               desired_time;                                                   // desired time for the current frame
     int                 nframes, est_nframes;                                           // variables for indexing offsets
 
@@ -362,7 +361,7 @@ int main(int argc, char *argv[])
     {
         desired_time = currentSample * sampleEvery + beginTime;
         printf("\n    Now processing sample %d/%d starting at %.2f ps\n",
-                currentSample + 1, nsamples, gmxtime );
+                currentSample + 1, nsamples, desired_time );
         fflush(stdout);
 
         // **************************************************** //
@@ -379,7 +378,7 @@ int main(int argc, char *argv[])
             desired_time = currentSample * sampleEvery + beginTime + dt * currentFrame;
             int frame = round(desired_time/frame_dt);
             xdrinfo = xdr_seek( trj, frame_offset[ frame ], SEEK_SET ); // set point to beginning of current frame
-            printf("%f\n", desired_time);
+            //printf("%f\n", desired_time);
             if ( xdrinfo != exdrOK ){
                 printf("WARNING:: xdr_seek returned error %d.\n", xdrinfo);
                 xdrfile_close(trj); exit(EXIT_FAILURE);
@@ -389,7 +388,7 @@ int main(int argc, char *argv[])
                 printf("Warning:: read_xtc returned error %d.\n", xdrinfo); 
                 xdrfile_close(trj); exit(EXIT_FAILURE);
             }
-            if ( fabs( desired_time - gmxtime ) > tprec ){ // check that we have the frame we want
+            if ( fabs( desired_time - gmxtime ) > frame_dt*1E-1 ){ // check that we have the frame we want
                 printf("\nWARNING:: could not find the desired frame at time %f (ps).\n", desired_time );
                 printf("I am instead at gmxtime: %f.\nIs something wrong with the trajectory?", gmxtime );
                 exit(EXIT_FAILURE);
@@ -1538,7 +1537,7 @@ void makeI ( user_complex_t *mat, int n )
 
 // parse input file to setup calculation
 void ir_init( char *argv[], char gmxf[], char cptf[], char outf[], char model[], user_real_t *dt, int *ntcfpoints, 
-              int *nsamples, int *sampleEvery, user_real_t *t1, user_real_t *avef, user_real_t *omegaStart, user_real_t *omegaStop, 
+              int *nsamples, float *sampleEvery, user_real_t *t1, user_real_t *avef, user_real_t *omegaStart, user_real_t *omegaStop, 
               int *omegaStep, int *natom_mol, int *nchrom_mol, int *nzeros, user_real_t *beginTime,
               char species[], int *imap )
 {
@@ -1582,7 +1581,7 @@ void ir_init( char *argv[], char gmxf[], char cptf[], char outf[], char model[],
         }
         else if ( strcmp(para,"sampleEvery") == 0 )
         {
-            sscanf( value, "%d", (int *) sampleEvery );
+            sscanf( value, "%f", (float *) sampleEvery );
         }
         else if ( strcmp(para,"omegaStep") == 0 )
         {
