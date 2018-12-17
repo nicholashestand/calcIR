@@ -1,1 +1,4 @@
 *.exe
+Docs/
+testing/
+*.swp
