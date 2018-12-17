@@ -7,7 +7,7 @@ Li and Skinner J. Chem. Phys 2010
 
 Gruenbaum et al. JCTC 2013
 
-The references in these papers are also useful. The program is built to run on GPU hardware and is thus very fast.
+The references in these papers are also useful. The program is built to run on GPU hardware.
 
 ## How do I use it?
 The program can be built using the supplied Makefile. The prerequisits are:
@@ -26,14 +26,6 @@ where input.inp is an input file. An example of the necessary components of the 
 
 ## Features
 This program can calculate infrared and Raman spectroscopy for trajectories obtained using the TIP4P, TIP4P/2005, E3B and E3B3 water models. 
-
-The program will automatically checkpoint its progress after each sample. If for some reason the program crashes, it can be restarted from the checkpoint file using the command
-
-calcIR.exe checkpoint.cpt
-
-where checkpoint.cpt is the name of the checkpoint file. Note that this must end with the extension .cpt.
-
-The makefile compiles a double, with extension '_d' and single precision version of the program. I have found single precision version to be accurate and much faster than the double precision version.
 
 ## Contact
 This readme is very brief. If questions arise, please contact me at nicholasjhestand@gmail.com.
