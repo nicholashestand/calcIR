@@ -4,10 +4,7 @@
  *  workers
  */
 
-
 #include "calcIR.h" 
-
-// TODO: TEST MRRR diagonalization routine to see if faster
 
 int main(int argc, char *argv[])
 {
@@ -407,25 +404,25 @@ int main(int argc, char *argv[])
             // if the first time, query for optimal workspace dimensions
             if ( SSYEVD_ALLOC_FLAG )
             {
-            magma_ssyevd_gpu( MagmaVec, MagmaUpper, (magma_int_t) nchrom, NULL, (magma_int_t) nchrom, 
-                              NULL, NULL, (magma_int_t) nchrom, aux_work, -1, aux_iwork, -1, &info );
-            lwork   = (magma_int_t) aux_work[0];
-            liwork  = aux_iwork[0];
+                magma_ssyevd_gpu( MagmaVec, MagmaUpper, (magma_int_t) nchrom, NULL, (magma_int_t) nchrom, 
+                                  NULL, NULL, (magma_int_t) nchrom, aux_work, -1, aux_iwork, -1, &info );
+                lwork   = (magma_int_t) aux_work[0];
+                liwork  = aux_iwork[0];
 
-            // allocate work arrays, eigenvalues and other stuff
-            w       = (user_real_t *)    malloc( nchrom       * sizeof(user_real_t)); if ( w == NULL ) MALLOC_ERR;
+                // allocate work arrays, eigenvalues and other stuff
+                w       = (user_real_t *)    malloc( nchrom       * sizeof(user_real_t)); if ( w == NULL ) MALLOC_ERR;
 
-            Merr = magma_imalloc_cpu   ( &iwork, liwork ); CHK_MERR; 
-            Merr = magma_smalloc_pinned( &wA , nchrom2 ) ; CHK_MERR;
-            Merr = magma_smalloc_pinned( &work , lwork  ); CHK_MERR;
-            SSYEVD_ALLOC_FLAG = 0;      // is allocated here, so we won't need to do it again
+                Merr = magma_imalloc_cpu   ( &iwork, liwork ); CHK_MERR; 
+                Merr = magma_smalloc_pinned( &wA , nchrom2 ) ; CHK_MERR;
+                Merr = magma_smalloc_pinned( &work , lwork  ); CHK_MERR;
+                SSYEVD_ALLOC_FLAG = 0;      // is allocated here, so we won't need to do it again
 
-            // get info about space needed for diagonalization
-            cudaMemGetInfo( &freem, &total );
-            printf("\n>>> cudaMemGetInfo returned\n"
-                   "\tfree:  %g gb\n"
-                   "\ttotal: %g gb\n", (float) freem/(1E9), (float) total/(1E9));
-            printf(">>> %g gb needed by diagonalization routine.\n", (float) (lwork * (float) sizeof(user_real_t)/(1E9)));
+                // get info about space needed for diagonalization
+                cudaMemGetInfo( &freem, &total );
+                printf("\n>>> cudaMemGetInfo returned\n"
+                       "\tfree:  %g gb\n"
+                       "\ttotal: %g gb\n", (float) freem/(1E9), (float) total/(1E9));
+                printf(">>> %g gb needed by diagonalization routine.\n", (float) (lwork * (float) sizeof(user_real_t)/(1E9)));
             }
 
             magma_ssyevd_gpu( MagmaVec, MagmaUpper, (magma_int_t) nchrom, kappa_d, (magma_int_t) nchrom,
