@@ -95,6 +95,7 @@ int main(int argc, char *argv[])
     magma_int_t         nchrom2;                                                        // nchrom squared
     const float         tprec = 1E-4;                                                   // precision for gmx time
     float               desired_time;                                                   // desired time for the current frame
+    int                 nframes, est_nframes;                                           // variables for indexing offsets
 
 
     // Trajectory variables for the CPU
@@ -102,7 +103,8 @@ int main(int argc, char *argv[])
     matrix              box;                                                            // Box vectors
     float               gmxtime, prec;                                                  // Time at current frame, precision of xtf file
     int                 step, xdrinfo;                                                  // The current step number
-
+    int64_t             *frame_offset;                                                  // Offset for random frame access from trajectory
+    float               frame_dt;                                                       // Time between successive frames
 
     // GPU variables                 
     const int           blockSize = 128;                                                // The number of threads to launch per block
@@ -337,6 +339,18 @@ int main(int argc, char *argv[])
         exit(EXIT_FAILURE);
     }
 
+    // index the frames for random access
+    read_xtc( trj, natoms, &step, &gmxtime, box, x, &prec );
+    float gmxtime2 = gmxtime;
+    read_xtc( trj, natoms, &step, &gmxtime, box, x, &prec );
+    frame_dt = round((gmxtime-gmxtime2)*prec)/(1.*prec);
+    printf(">>> Frame time offset is: %f (ps)\n", frame_dt );
+    xdrfile_close(trj);
+    printf(">>> Now indexing the xtc file to allow random access.\n");
+    read_xtc_n_frames( gmxf, &nframes, &est_nframes, &frame_offset );
+
+    // open xtc file for reading
+    trj = xdrfile_open( gmxf, "r" );
     
     printf("\n>>> Now calculating the absorption spectrum\n");
     printf("----------------------------------------------------------\n");
@@ -346,22 +360,10 @@ int main(int argc, char *argv[])
 
     while( currentSample < nsamples )
     {
-        // break; -- testing
-        // search trajectory for current sample starting point
-        xdrinfo = read_xtc( trj, natoms, &step, &gmxtime, box, x, &prec );
-        if ( xdrinfo != 0 )
-        {
-            printf("WARNING:: read_xtc returned error %d.\n"
-                   "Is the trajectory long enough?\n", xdrinfo);
-            exit(EXIT_FAILURE);
-        }
-
         desired_time = currentSample * sampleEvery + beginTime;
-        if ( fabs ( desired_time - gmxtime ) < tprec )
-        //if ( currentSample * sampleEvery + (int) beginTime == (int) gmxtime )
-        {
-            printf("\n    Now processing sample %d/%d starting at %.2f ps\n", currentSample + 1, nsamples, gmxtime );
-            fflush(stdout);
+        printf("\n    Now processing sample %d/%d starting at %.2f ps\n",
+                currentSample + 1, nsamples, gmxtime );
+        fflush(stdout);
 
         // **************************************************** //
         // ***         MAIN LOOP OVER TRAJECTORY            *** //
@@ -373,13 +375,27 @@ int main(int argc, char *argv[])
 
 
             // read the current frame from the trajectory file and copy to device memory
+            // this assumes that the trajectory has no gaps and starts at time zero, but should give a warning if something goes wrong
             desired_time = currentSample * sampleEvery + beginTime + dt * currentFrame;
-            // note it was read in the outer loop if we are at frame 0
-            if ( currentFrame != 0 ) read_xtc( trj, natoms, &step, &gmxtime, box, x, &prec );
-            
-            // make sure that the time is consistent with dt -- only proceed if we are at the desired time
-            if ( fabs( desired_time - gmxtime ) > tprec ) continue;
-            
+            int frame = round(desired_time/frame_dt);
+            xdrinfo = xdr_seek( trj, frame_offset[ frame ], SEEK_SET ); // set point to beginning of current frame
+            printf("%f\n", desired_time);
+            if ( xdrinfo != exdrOK ){
+                printf("WARNING:: xdr_seek returned error %d.\n", xdrinfo);
+                xdrfile_close(trj); exit(EXIT_FAILURE);
+            }
+            xdrinfo = read_xtc( trj, natoms, &step, &gmxtime, box, x, &prec ); // read frame from disk
+            if ( xdrinfo != exdrOK ){
+                printf("Warning:: read_xtc returned error %d.\n", xdrinfo); 
+                xdrfile_close(trj); exit(EXIT_FAILURE);
+            }
+            if ( fabs( desired_time - gmxtime ) > tprec ){ // check that we have the frame we want
+                printf("\nWARNING:: could not find the desired frame at time %f (ps).\n", desired_time );
+                printf("I am instead at gmxtime: %f.\nIs something wrong with the trajectory?", gmxtime );
+                exit(EXIT_FAILURE);
+            }
+
+            // copy trajectory to gpu memory
             cudaMemcpy( x_d, x, natoms*sizeof(x[0]), cudaMemcpyHostToDevice );
 
             // allocate space for hamiltonian on the GPU if acively managing GPU memory
@@ -442,7 +458,6 @@ int main(int argc, char *argv[])
 
             if ( currentFrame == 0 )
             {
-
                 // project the transition dipole moments onto the eigenbasis
                 // MU_d = kappa_d**T x mu_d 
                 magma_sgemv( MagmaTrans, (magma_int_t) nchrom, (magma_int_t) nchrom, 
@@ -475,7 +490,7 @@ int main(int argc, char *argv[])
             // ---------------------------------------------------- //
             // ***              The Frequency Distb.            *** //
 
-            // I'll do everything on the CPU here since I want to do it quick. 
+            // could make this a function...
             // copy eigenvectors back to host memory
             cudaMemcpy( kappa, kappa_d, nchrom2*sizeof(user_real_t), cudaMemcpyDeviceToHost );
 
@@ -577,8 +592,6 @@ int main(int argc, char *argv[])
                 cast_to_complex_GPU <<<numBlocks,blockSize>>> ( axy_d  , caxy0_d  , nchrom );
                 cast_to_complex_GPU <<<numBlocks,blockSize>>> ( ayz_d  , cayz0_d  , nchrom );
                 cast_to_complex_GPU <<<numBlocks,blockSize>>> ( azx_d  , cazx0_d  , nchrom );
-                
-
             }
             else
             {
@@ -747,10 +760,8 @@ int main(int argc, char *argv[])
         // done with current sample, move to next, and reset currentFrame to 0
         currentSample +=1;
         currentFrame  = 0;
-
-        }
+        
     } // end outer loop
-
 
     printf("\n\n----------------------------------------------------------\n");
     printf("Finishing up...\n");

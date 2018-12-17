@@ -15,6 +15,7 @@
 #include <time.h>
 #include <xdrfile.h>
 #include <xdrfile_xtc.h>
+#include <xtc_seek.h>
 
 // TYPES AND MAGMA REDEFINES
 
