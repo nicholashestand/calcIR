@@ -42,7 +42,6 @@ int main(int argc, char *argv[])
     char          model[MAX_STR_LEN];strncpy( model,"e3b3", MAX_STR_LEN );   // water model tip4p, tip4p2005, e3b2, e3b3
     int           imodel        = 0;                                      // integer for water model
     int           ispecies      = 0;                                      // integer for species of interest
-    int           SPECD_FLAG    = 1;                                      // calculate the spectral density
     int           ntcfpoints    = 150 ;                                   // the number of tcf points for each spectrum
     int           nsamples      = 1   ;                                   // number of samples to average for the total spectrum
     int           sampleEvery   = 10  ;                                   // sample a new configuration every sampleEvery ps. Note the way the program is written, 
@@ -67,7 +66,7 @@ int main(int argc, char *argv[])
     // START FROM INPUT FILE
     ir_init( argv, gmxf, cptf, outf, model, &dt, &ntcfpoints, &nsamples, &sampleEvery, &t1, 
             &avef, &omegaStart, &omegaStop, &omegaStep, &natom_mol, &nchrom_mol, &nzeros, &beginTime,
-            &SPECD_FLAG, &max_int_steps, species );
+            &max_int_steps, species );
 
 
     // Print the parameters to stdout
@@ -82,7 +81,6 @@ int main(int argc, char *argv[])
     printf("\tSetting natom_mol to %d\n",                   natom_mol   );
     printf("\tSetting nchrom_mol to %d\n",                  nchrom_mol  );
     printf("\tSetting nzeros to %d\n",                      nzeros      );
-    printf("\tSetting SPECD_FLAG to %d\n",                  SPECD_FLAG  );
     printf("\tSetting species to %s\n",                     species     );
     printf("\tSetting omegaStart to %f\n",                  omegaStart  );
     printf("\tSetting omegaStop to %f\n",                   omegaStop   );
@@ -302,30 +300,25 @@ int main(int argc, char *argv[])
     kappa   = (user_real_t *)    malloc( nchrom2 * sizeof(user_real_t)); if ( kappa == NULL ) MALLOC_ERR;
 
 
-    // memory for spectral density calculation, if requested
-    if ( SPECD_FLAG )
-    {
-        // CPU arrays
-        omega   = (user_real_t *)    malloc( nomega       * sizeof(user_real_t)); if ( omega == NULL ) MALLOC_ERR;
-        Sw      = (user_real_t *)    calloc( nomega       , sizeof(user_real_t)); if ( Sw    == NULL ) MALLOC_ERR;
-        tmpSw   = (user_real_t *)    malloc( nomega       * sizeof(user_real_t)); if ( tmpSw == NULL ) MALLOC_ERR;
-        Pw      = (user_real_t *)    calloc( nomega       , sizeof(user_real_t)); if ( Pw    == NULL ) MALLOC_ERR;
-        Rw      = (user_real_t *)    calloc( nomega       , sizeof(user_real_t)); if ( Rw    == NULL ) MALLOC_ERR;
-        Rmw     = (user_real_t *)    calloc( nomega       , sizeof(user_real_t)); if ( Rmw    == NULL ) MALLOC_ERR;
+    // memory for spectral density calculation
+    // CPU arrays
+    omega   = (user_real_t *)    malloc( nomega       * sizeof(user_real_t)); if ( omega == NULL ) MALLOC_ERR;
+    Sw      = (user_real_t *)    calloc( nomega       , sizeof(user_real_t)); if ( Sw    == NULL ) MALLOC_ERR;
+    tmpSw   = (user_real_t *)    malloc( nomega       * sizeof(user_real_t)); if ( tmpSw == NULL ) MALLOC_ERR;
+    Pw      = (user_real_t *)    calloc( nomega       , sizeof(user_real_t)); if ( Pw    == NULL ) MALLOC_ERR;
+    Rw      = (user_real_t *)    calloc( nomega       , sizeof(user_real_t)); if ( Rw    == NULL ) MALLOC_ERR;
+    Rmw     = (user_real_t *)    calloc( nomega       , sizeof(user_real_t)); if ( Rmw    == NULL ) MALLOC_ERR;
 
+    // GPU arrays
+    Cuerr = cudaMalloc( &MUX_d   , nchrom       *sizeof(user_real_t)); CHK_ERR;
+    Cuerr = cudaMalloc( &MUY_d   , nchrom       *sizeof(user_real_t)); CHK_ERR;
+    Cuerr = cudaMalloc( &MUZ_d   , nchrom       *sizeof(user_real_t)); CHK_ERR;
+    Cuerr = cudaMalloc( &omega_d , nomega       *sizeof(user_real_t)); CHK_ERR;
+    Cuerr = cudaMalloc( &Sw_d    , nomega       *sizeof(user_real_t)); CHK_ERR;
+    Cuerr = cudaMalloc( &w_d     , nchrom       *sizeof(user_real_t)); CHK_ERR;
 
-
-        // GPU arrays
-        Cuerr = cudaMalloc( &MUX_d   , nchrom       *sizeof(user_real_t)); CHK_ERR;
-        Cuerr = cudaMalloc( &MUY_d   , nchrom       *sizeof(user_real_t)); CHK_ERR;
-        Cuerr = cudaMalloc( &MUZ_d   , nchrom       *sizeof(user_real_t)); CHK_ERR;
-        Cuerr = cudaMalloc( &omega_d , nomega       *sizeof(user_real_t)); CHK_ERR;
-        Cuerr = cudaMalloc( &Sw_d    , nomega       *sizeof(user_real_t)); CHK_ERR;
-        Cuerr = cudaMalloc( &w_d     , nchrom       *sizeof(user_real_t)); CHK_ERR;
-
-        // initialize omega array
-        for (int i = 0; i < nomega; i++) omega[i] = (user_real_t) (omegaStart + omegaStep*i); 
-    }
+    // initialize omega array
+    for (int i = 0; i < nomega; i++) omega[i] = (user_real_t) (omegaStart + omegaStep*i); 
  
     // ***            END MEMORY ALLOCATION             *** //
     // **************************************************** //
@@ -451,7 +444,7 @@ int main(int argc, char *argv[])
             // ---------------------------------------------------- //
             // ***              The Spectral Density            *** //
 
-            if ( currentFrame == 0 && SPECD_FLAG )
+            if ( currentFrame == 0 )
             {
 
                 // project the transition dipole moments onto the eigenbasis
@@ -830,7 +823,7 @@ int main(int argc, char *argv[])
 
 
     // normalize spectral density by number of samples
-    if ( SPECD_FLAG ) for ( int i = 0; i < nomega; i++) Sw[i]   = Sw[i] / (user_real_t) nsamples;
+    for ( int i = 0; i < nomega; i++) Sw[i]   = Sw[i] / (user_real_t) nsamples;
 
     // normalize the frequency and ipr weighted frequency distributions
     for ( int i = 0; i < nomega; i ++ ) Pw[i]  /= nchrom*nsamples*ntcfpoints;
@@ -869,12 +862,9 @@ int main(int argc, char *argv[])
 
 
     // write the spectral density
-    if ( SPECD_FLAG )
-    {
-        spec_density = fopen(strcat(strcpy(fname,outf),"_spdn.dat"), "w");
-        for ( int i = 0; i < nomega; i++) fprintf(spec_density, "%g %g\n", omega[i], Sw[i]);
-        fclose(spec_density);
-    }
+    spec_density = fopen(strcat(strcpy(fname,outf),"_spdn.dat"), "w");
+    for ( int i = 0; i < nomega; i++) fprintf(spec_density, "%g %g\n", omega[i], Sw[i]);
+    fclose(spec_density);
 
     // write the frequency distributions
     freq_dist = fopen(strcat(strcpy(fname,outf),"_Pw.dat"), "w");
@@ -993,21 +983,18 @@ int main(int argc, char *argv[])
     }
 
     // free memory used in spectral density calculation
-    if ( SPECD_FLAG ) // only used if the spetral density is calculated
-    {
-        // CPU arrays
-        free(omega);
-        free(Sw);
-        free(tmpSw);
+    // CPU arrays
+    free(omega);
+    free(Sw);
+    free(tmpSw);
 
-        // GPU arrays
-        cudaFree(MUX_d); 
-        cudaFree(MUY_d);
-        cudaFree(MUZ_d);
-        cudaFree(omega_d);
-        cudaFree(Sw_d);
-        cudaFree(w_d);
-    }
+    // GPU arrays
+    cudaFree(MUX_d); 
+    cudaFree(MUY_d);
+    cudaFree(MUZ_d);
+    cudaFree(omega_d);
+    cudaFree(Sw_d);
+    cudaFree(w_d);
  
     // final call to finalize magma math library
     magma_finalize();
@@ -1519,7 +1506,7 @@ void makeI ( user_complex_t *mat, int n )
 // parse input file to setup calculation
 void ir_init( char *argv[], char gmxf[], char cptf[], char outf[], char model[], user_real_t *dt, int *ntcfpoints, 
               int *nsamples, int *sampleEvery, user_real_t *t1, user_real_t *avef, user_real_t *omegaStart, user_real_t *omegaStop, 
-              int *omegaStep, int *natom_mol, int *nchrom_mol, int *nzeros, user_real_t *beginTime, int *SPECD_FLAG,
+              int *omegaStep, int *natom_mol, int *nchrom_mol, int *nzeros, user_real_t *beginTime,
               user_real_t *max_int_steps, char species[] )
 {
     char                para[MAX_STR_LEN];
@@ -1579,10 +1566,6 @@ void ir_init( char *argv[], char gmxf[], char cptf[], char outf[], char model[],
         else if ( strcmp(para,"nzeros") == 0 )
         {
             sscanf( value, "%d", (int *) nzeros );
-        }
-        else if ( strcmp(para,"SPECD_FLAG") == 0 )
-        {
-            sscanf( value, "%d", (int *) SPECD_FLAG);
         }
         else if ( strcmp(para,"species") == 0 )
         {
