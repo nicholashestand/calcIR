@@ -1,6 +1,5 @@
 xtcf            nvt.xtc                     // the xtc file
 outf            test                        // the name to prepend to the output files
-max_int_steps   4                           // Integration steps from t to t+dt for adams method
 dt              0.010                       // time between tcf points in ps
 ntcfpoints      400                         // number of tcf points for each spectrum
 nsamples        2                           // the number of spectra to average
@@ -16,7 +15,7 @@ omegaStep       5                           // resolution of spectral density
 natom_mol       4                           // atoms per molecule (4 for TIP4P (E3B2) and TIP4P2005 (E3B3))
 nchrom_mol      2                           // chromophores per water molecule (2 for stretch, 1 for bend)
 nzeros          25600                       // zero padding to tcf to smooth the spectrum 
-model           e3b3                        // the model -- the M site is moved for E3B and TIP4P2005
+model           e3b3                        // the model -- the M site is moved for E3B and tip4p2005
 beginTime       0                           // the equilibration time in ps (ie, dont calculate the spectrum for the first beginTime many picoseconds)
-cptf            calc_ir.cpt                 // checkpoint file name if found, will restart calculation from here, otherwise will start the calculation from sample 0
+map             0                           // 0 - 2013 gruenbaum, 1 - 2010 Li and Skinner
 species         HOD/D2O                     // H2O, D2O, HOD/D2O, HOD/H2O

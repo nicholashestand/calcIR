@@ -41,6 +41,7 @@ int main(int argc, char *argv[])
     char          cptf[MAX_STR_LEN]; strncpy( cptf, "spec", MAX_STR_LEN );   // name for output files
     char          model[MAX_STR_LEN];strncpy( model,"e3b3", MAX_STR_LEN );   // water model tip4p, tip4p2005, e3b2, e3b3
     int           imodel        = 0;                                      // integer for water model
+    int           imap          = 0;                                      // integer for spectroscopic map used (0 - 2013 Gruenbaum) (1 - 2010 Li)
     int           ispecies      = 0;                                      // integer for species of interest
     int           ntcfpoints    = 150 ;                                   // the number of tcf points for each spectrum
     int           nsamples      = 1   ;                                   // number of samples to average for the total spectrum
@@ -65,13 +66,12 @@ int main(int argc, char *argv[])
     // START FROM INPUT FILE
     ir_init( argv, gmxf, cptf, outf, model, &dt, &ntcfpoints, &nsamples, &sampleEvery, &t1, 
             &avef, &omegaStart, &omegaStop, &omegaStep, &natom_mol, &nchrom_mol, &nzeros, &beginTime,
-            species );
+            species, &imap );
 
 
     // Print the parameters to stdout
     printf("\tSetting xtc file %s\n",                       gmxf        );
     printf("\tSetting default file name to %s\n",           outf        );
-    printf("\tSetting cpt file %s\n",                       cptf        );
     printf("\tSetting model to %s\n",                       model       );
     printf("\tSetting the number of tcf points to %d\n",    ntcfpoints  );
     printf("\tSetting nsamples to %d\n",                    nsamples    ); 
@@ -80,6 +80,7 @@ int main(int argc, char *argv[])
     printf("\tSetting natom_mol to %d\n",                   natom_mol   );
     printf("\tSetting nchrom_mol to %d\n",                  nchrom_mol  );
     printf("\tSetting nzeros to %d\n",                      nzeros      );
+    printf("\tSetting map to %d\n",                         imap        );
     printf("\tSetting species to %s\n",                     species     );
     printf("\tSetting omegaStart to %f\n",                  omegaStart  );
     printf("\tSetting omegaStop to %f\n",                   omegaStop   );
@@ -390,7 +391,7 @@ int main(int argc, char *argv[])
             // launch kernel to calculate the electric field projection along OH bonds and build the exciton hamiltonian
             get_eproj_GPU <<<numBlocks,blockSize>>> ( x_d, box[0][0], box[1][1], box[2][2], natoms, natom_mol, nchrom, nchrom_mol, nmol, imodel, eproj_d );
             get_kappa_GPU <<<numBlocks,blockSize>>> ( x_d, box[0][0], box[1][1], box[2][2], natoms, natom_mol, nchrom, nchrom_mol, nmol, eproj_d, kappa_d, 
-                                                      mux_d, muy_d, muz_d, axx_d, ayy_d, azz_d, axy_d, ayz_d, azx_d, avef, ispecies);
+                                                      mux_d, muy_d, muz_d, axx_d, ayy_d, azz_d, axy_d, ayz_d, azx_d, avef, ispecies, imap);
 
 
             // ***          Done getting System Info            *** //
@@ -1168,7 +1169,8 @@ void get_eproj_GPU( rvec *x, float boxx, float boxy, float boxz, int natoms, int
 __global__
 void get_kappa_GPU( rvec *x, float boxx, float boxy, float boxz, int natoms, int natom_mol, int nchrom, int nchrom_mol, int nmol, 
                     user_real_t *eproj, user_real_t *kappa, user_real_t *mux, user_real_t *muy, user_real_t *muz, user_real_t *axx,
-                    user_real_t *ayy, user_real_t *azz, user_real_t *axy, user_real_t *ayz, user_real_t *azx, user_real_t avef, int ispecies )
+                    user_real_t *ayy, user_real_t *azz, user_real_t *axy, user_real_t *ayz, user_real_t *azx, user_real_t avef, int ispecies,
+                    int imap)
 {
     
     int n, m, istart, istride;
@@ -1191,6 +1193,47 @@ void get_kappa_GPU( rvec *x, float boxx, float boxy, float boxz, int natoms, int
     user_real_t xn, xm, pn, pm;                   // the x and p from the map
     user_real_t wn, wm;                           // the energies
 
+    // define the maps
+    user_real_t map_w[3], map_x[2], map_p[2], map_mup[3], map_wi[3];
+
+    // 2013 maps from gruenbaum
+    if ( imap == 0 ){
+        // H2O and HOD/D2O
+        if ( ispecies == 0 || ispecies == 1 ){
+            map_w[0] = 3670.2;  map_w[1] = -3541.7; map_w[2] = -152677.0;
+            map_x[0] = 0.19285; map_x[1] = -1.7261E-5;
+            map_p[0] = 1.6466;  map_p[1] = 5.7692E-4;
+        }
+        // D2O and HOD/H2O
+        if ( ispecies == 2 || ispecies == 3 ){
+            map_w[0] = 2767.8;  map_w[1] = -2630.3; map_w[2] = -102601.0;
+            map_x[0] = 0.16593; map_x[1] = -2.0632E-5;
+            map_p[0] = 2.0475;  map_p[1] = 8.9108E-4;
+        }
+        map_mup[0] = 0.1646; map_mup[1] = 11.39; map_mup[2] = 63.41;
+        map_wi[0] = -1361.0; map_wi[1] = 27165.0; map_wi[2] = -1.887;
+    }
+    // 2010 map from Li and Skinner
+    else if ( imap == 1 )
+    {
+        // H2O and HOD/D2O
+        if ( ispecies == 0 || ispecies == 1 ){
+            map_w[0] = 3732.9;  map_w[1] = -3519.8; map_w[2] = -153520.0;
+            map_x[0] = 0.19318; map_x[1] = -1.7248E-5;
+            map_p[0] = 1.6102;  map_p[1] = 5.8697E-4;
+        }
+        // D2O and HOD/H2O
+        if ( ispecies == 2 || ispecies == 3 ){
+            map_w[0] = 2748.2;  map_w[1] = -2572.2; map_w[2] = -102980.0;
+            map_x[0] = 0.16598; map_x[1] = -2.0752E-5;
+            map_p[0] = 1.9813;  map_p[1] = 9.1419E-4;
+        }
+        // note the wi have to be converted from hartree to cm from 
+        // the values in the table of the paper
+        map_mup[0] = 0.1622; map_mup[1] = 10.381; map_mup[2] = 137.6;
+        map_wi[0] = -1360.8; map_wi[1] = 27171.0; map_wi[2] = -1.887;
+    }
+
     istart  =   blockIdx.x * blockDim.x + threadIdx.x;
     istride =   blockDim.x * gridDim.x;
 
@@ -1202,20 +1245,11 @@ void get_kappa_GPU( rvec *x, float boxx, float boxy, float boxz, int natoms, int
         n   = chromn / nchrom_mol;
         En  = eproj[chromn];
 
-        // build the map
-        if ( ispecies == 0 || ispecies == 1 ){
-            // here we care about h2o maps
-            wn  = 3760.2 - 3541.7*En - 152677.0*En*En;
-            xn  = 0.19285 - 1.7261E-5 * wn;
-            pn  = 1.6466  + 5.7692E-4 * wn;
-        }
-        else if ( ispecies == 2 || ispecies == 3 ){
-            // here we care about h2o maps
-            wn  = 2767.8 - 2630.3*En - 102601.0*En*En;
-            xn  = 0.16593 - 2.0632E-5 * wn;
-            pn  = 2.0475  + 8.9108E-4 * wn;
-        }
-        nmuprime = 0.1646 + 11.39*En + 63.41*En*En;
+        // get parameters from the map
+        wn  = map_w[0] + map_w[1]*En + map_w[2]*En*En;
+        xn  = map_x[0] + map_x[1]*wn;
+        pn  = map_p[0] + map_p[1]*wn;
+        nmuprime = map_mup[0] + map_mup[1]*En + map_mup[2]*En*En;
 
         // and calculate the location of the transition dipole moment
         // SEE calc_efield_GPU for assumptions about ordering of atoms
@@ -1271,24 +1305,17 @@ void get_kappa_GPU( rvec *x, float boxx, float boxy, float boxz, int natoms, int
             Em  = eproj[chromm];
 
             // also get the relevent x and p from the map
-            if ( ispecies == 0 || ispecies == 1 ){
-                // here we care about h2o maps
-                wm  = 3760.2 - 3541.7*Em - 152677.0*Em*Em;
-                xm  = 0.19285 - 1.7261E-5 * wm;
-                pm  = 1.6466  + 5.7692E-4 * wm;
-            }
-            else if ( ispecies == 2 || ispecies == 3 ){
-                // here we care about h2o maps
-                wm  = 2767.8 - 2630.3*Em - 102601.0*Em*Em;
-                xm  = 0.16593 - 2.0632E-5 * wm;
-                pm  = 2.0475  + 8.9108E-4 * wm;
-            }
-            mmuprime = 0.1646 + 11.39*Em + 63.41*Em*Em;
+            // get parameters from the map
+            wm  = map_w[0] + map_w[1]*Em + map_w[2]*Em*Em;
+            xm  = map_x[0] + map_x[1]*wm;
+            pm  = map_p[0] + map_p[1]*wm;
+            mmuprime = map_mup[0] + map_mup[1]*Em + map_mup[2]*Em*Em;
 
             // the diagonal energy
             if ( chromn == chromm )
             {
-                // Note that this is a flattened 2d array -- subtract high frequency energies to get rid of highly oscillatory parts of the F matrix
+                // Note that this is a flattened 2d array 
+                // subtract high frequency energies to get rid of highly oscillatory parts of the F matrix
                 kappa[chromn*nchrom + chromm]   = wm - avef;
             }
 
@@ -1302,7 +1329,7 @@ void get_kappa_GPU( rvec *x, float boxx, float boxy, float boxz, int natoms, int
                 }
                 // ** --
                 else{
-                    kappa[chromn*nchrom + chromm]   =  (-1361.0 + 27165*(En + Em))*xn*xm - 1.887*pn*pm;
+                    kappa[chromn*nchrom + chromm] = (map_wi[0] + map_wi[1]*(En + Em))*xn*xm + map_wi[2]*pn*pm;
                 }
             }
 
@@ -1505,7 +1532,7 @@ void makeI ( user_complex_t *mat, int n )
 void ir_init( char *argv[], char gmxf[], char cptf[], char outf[], char model[], user_real_t *dt, int *ntcfpoints, 
               int *nsamples, int *sampleEvery, user_real_t *t1, user_real_t *avef, user_real_t *omegaStart, user_real_t *omegaStop, 
               int *omegaStep, int *natom_mol, int *nchrom_mol, int *nzeros, user_real_t *beginTime,
-              char species[] )
+              char species[], int *imap )
 {
     char                para[MAX_STR_LEN];
     char                value[MAX_STR_LEN];
@@ -1564,6 +1591,10 @@ void ir_init( char *argv[], char gmxf[], char cptf[], char outf[], char model[],
         else if ( strcmp(para,"nzeros") == 0 )
         {
             sscanf( value, "%d", (int *) nzeros );
+        }
+        else if ( strcmp(para,"map") == 0 )
+        {
+            sscanf( value, "%d", (int *) imap );
         }
         else if ( strcmp(para,"species") == 0 )
         {
